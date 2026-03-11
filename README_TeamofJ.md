@@ -2,6 +2,23 @@
 
 ---
 
+## What Each Workspace File Does
+
+| File | Purpose | Loaded in |
+|------|---------|-----------|
+| **AGENTS.md** | The agent's **operating manual**. Session startup procedures, memory conventions, safety boundaries, group chat etiquette, heartbeat guidelines. Think "employee handbook." | All sessions |
+| **IDENTITY.md** | The agent's **identity card, profile, and outward presentation**. Name, creature type, vibe, emoji, avatar. Also: role, scope boundary (expertise and out-of-scope), team directory. Defines *what* the agent is and *who* it works with. | All sessions |
+| **SOUL.md** | The agent's **persona, tone, philosophy, personality, and core behavior**. Rules, decision-making process, conditional behavior. The only file with a privileged behavioral directive — the system prompt says: *"If SOUL.md is present, embody its persona and tone."* Defines *how* the agent thinks and acts. (e.g., IDENTITY.md defines out-of-scope areas; SOUL.md defines "reject out-of-scope work and redirect." IDENTITY.md lists the team directory; SOUL.md defines "delegate tasks to teammates.") | All sessions |
+| **TOOLS.md** | **Environment-specific private notes**. Software available, CLI paths, API endpoints. Also: device names, IPs, file paths, .env values. Private to each agent. A cheat sheet — does NOT control tool availability. | All sessions |
+| **USER.md** | Profile of the **human** the agent serves. Name, timezone, pronouns, preferences. | All sessions |
+| **HEARTBEAT.md** | **Periodic check-in instructions**. Read during heartbeat polls. In lightweight heartbeat mode, this is the ONLY file loaded. | Main + lightweight heartbeat |
+| **MEMORY.md** | **Curated long-term memory**. Persistent knowledge across sessions. Security boundary — should not leak to group participants. | Main sessions only |
+| **skills/** | Domain-specific instruction files (`skills/*/SKILL.md`). Loaded progressively — only summaries in the system prompt; full content read on demand. | All sessions |
+
+> **Note:** All per-agent file contents below (SOUL.md, IDENTITY.md, etc.) are **additions to the default OpenClaw template**, not replacements. When writing these files, append the role-specific sections below the existing template content.
+
+---
+
 # JENNY (Project Manager)
 
 ## IDENTITY.md
@@ -13,17 +30,19 @@
 Project Manager for an architecture & interior design studio.
 
 ## Scope
-- Task breakdown and planning
-- Coordination and scheduling
-- Status tracking and reporting
-- Design brief analysis
-- Resource allocation across the team
+- Receive and interpret user messages (simple requests or full design briefs with attachments)
+- Save and organize attached files for team retrieval
+- Decompose requests into actionable tasks with dependencies
+- Assign each task to the appropriate team member
+- Track task progress and completion across the team
+- Coordinate handoffs between team members (e.g., 3D model → renderer)
 
 ## Out of Scope
 - Design decisions or aesthetic judgment
+- Quality assessment or critique (that is the Creative Director's responsibility)
 - Drawing production (2D or 3D)
 - Rendering or visualization
-- Design approval or critique
+- Any production work — Jenny plans, assigns, and tracks; she does not execute
 
 ## Team Directory
 | Handle | Name | Role |
@@ -66,16 +85,7 @@ All team communication happens in the **Team of J** group chat via @mentions.
 
 ## TOOLS.md
 
-```markdown
-# Tools
-
-## Communication
-- `message` tool — send messages to team members via @mention in group chat
-
-## File Management
-- `read` / `write` / `edit` tools — organize project folders and documents
-- Project files stored in workspace directory
-```
+Default OpenClaw template (no environment-specific notes yet).
 
 ## Skills
 
@@ -202,16 +212,7 @@ All team communication happens in the **Team of J** group chat via @mentions.
 
 ## TOOLS.md
 
-```markdown
-# Tools
-
-## Communication
-- `message` tool — send review feedback and direction to team via @mention in group chat
-
-## Reference
-- `read` tool — review design outputs and project documents
-- `web_search` / `web_fetch` — research architectural precedents and references
-```
+Default OpenClaw template (no environment-specific notes yet).
 
 ## Skills
 
@@ -360,20 +361,7 @@ All team communication happens in the **Team of J** group chat via @mentions.
 
 ## TOOLS.md
 
-```markdown
-# Tools
-
-## Drawing
-- `exec` tool — run CAD CLI commands if available
-- `write` tool — output SVG or DXF files
-- Text-based drawing descriptions when no CAD software is available
-
-## Reference
-- `read` tool — review project briefs, site data, and team outputs
-
-## Communication
-- `message` tool — coordinate with team via @mention in group chat
-```
+Default OpenClaw template (no environment-specific notes yet).
 
 ## Skills
 
@@ -603,21 +591,7 @@ All team communication happens in the **Team of J** group chat via @mentions.
 
 ## TOOLS.md
 
-```markdown
-# Tools
-
-## 3D Software
-- Rhino 8 via RhinoMCP (if available)
-- Blender via CLI: `blender --background --python script.py` (if available)
-- Output formats: .3dm, .blend, .obj, .stl
-
-## File Management
-- `read` / `write` tools — save models and read project documents
-- `exec` tool — run 3D software commands
-
-## Communication
-- `message` tool — coordinate with team via @mention in group chat
-```
+Default OpenClaw template (no environment-specific notes yet).
 
 ## Skills
 
@@ -840,20 +814,7 @@ All team communication happens in the **Team of J** group chat via @mentions.
 
 ## TOOLS.md
 
-```markdown
-# Tools
-
-## Image Generation
-- Image generation tools if available (specify per setup)
-- `exec` tool for running render scripts or CLI tools
-
-## Reference
-- `read` tool — review project documents, plans, and 3D model descriptions
-- `web_search` / `web_fetch` — find material references, precedent images, product specs
-
-## Communication
-- `message` tool — coordinate with team via @mention in group chat
-```
+Default OpenClaw template (no environment-specific notes yet).
 
 ## Skills
 
@@ -1033,17 +994,37 @@ Every material specification should include:
 
 ---
 
+# SHARED FILES (same for all 5 agents)
+
+- **AGENTS.md** — default OpenClaw template (no changes needed)
+- **TOOLS.md** — default OpenClaw template (no changes needed)
+- **HEARTBEAT.md** — default OpenClaw template (no changes needed)
+- **MEMORY.md** — default OpenClaw template (no changes needed)
+
+## USER.md (shared)
+
+```markdown
+# USER.md - About Your Human
+
+- **Name:** Jerry
+- **What to call them:** Jerry
+- **Timezone:** Asia/Shanghai (GMT+8)
+- **Notes:** Prefer responses about current time to follow the system time by default, not Shanghai time.
+```
+
+---
+
 # Execution Order
 
 1. Create 5 per-agent workspace directories (if not already existing)
-2. Write 5 `IDENTITY.md` files
-3. Write 5 `SOUL.md` files
-4. Write 5 `TOOLS.md` files
-5. Create per-agent `skills/` folders and write all SKILL.md files:
+2. Write shared `USER.md` to all 5 workspaces (AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md use default OpenClaw templates)
+3. Write 5 per-agent `IDENTITY.md` files
+4. Write 5 per-agent `SOUL.md` files
+6. Create per-agent `skills/` folders and write all SKILL.md files:
    - Jenny: 1 skill (brief-analysis)
    - Jacob: 2 skills (design-principles, architectural-reference)
    - Jade: 3 skills (drawing-conventions, building-codes, floor-plan-technique)
    - Jack: 3 skills (massing-technique, rhino-commands, structural-logic)
    - Jimmy: 3 skills (material-specification, lighting-technique, camera-composition)
-6. Verify `openclaw.json` points each agent to its workspace directory
-7. Test with varied requests in Telegram group
+7. Verify `openclaw.json` points each agent to its workspace directory
+8. Test with varied requests in Telegram group

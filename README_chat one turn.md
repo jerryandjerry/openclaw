@@ -280,12 +280,14 @@ Telegram DM  → "agent:main:main"   ← same session!
 Discord DM   → "agent:main:main"   ← same session!
 ```
 
-When `dmScope` is `"channel"`, each channel gets its own DM session:
+Other `dmScope` values create per-peer or per-channel sessions:
 
-```
-iMessage DM  → "agent:main:imessage:direct:+1234567890"
-Telegram DM  → "agent:main:telegram:direct:98765432"
-```
+| dmScope | Behavior | Example DM Session Key |
+|---------|----------|------------------------|
+| `"main"` (default) | All DMs share one session | `agent:main:main` |
+| `"per-peer"` | Per-peer across all channels | `agent:main:peer:98765432` |
+| `"per-channel-peer"` | Per-channel + per-peer | `agent:main:telegram:direct:98765432` |
+| `"per-account-channel-peer"` | Per-account + per-channel + per-peer | `agent:main:jenny-bot:telegram:direct:98765432` |
 
 Group messages ALWAYS get separate sessions regardless of dmScope.
 
@@ -454,14 +456,20 @@ async function readFileWithCache(filePath: string): Promise<string> {
 ### Subagent/Cron Filter
 
 ```typescript
-const MINIMAL_BOOTSTRAP_ALLOWLIST = new Set(["AGENTS.md", "TOOLS.md"]);
+const MINIMAL_BOOTSTRAP_ALLOWLIST = new Set([
+  "AGENTS.md",
+  "TOOLS.md",
+  "SOUL.md",
+  "IDENTITY.md",
+  "USER.md",
+]);
 
 export function filterBootstrapFilesForSession(files, sessionKey?) {
   if (!sessionKey || (!isSubagentSessionKey(sessionKey) && !isCronSessionKey(sessionKey))) {
     return files;  // main sessions get ALL files
   }
   return files.filter((file) => MINIMAL_BOOTSTRAP_ALLOWLIST.has(file.name));
-  // subagents and cron only get AGENTS.md + TOOLS.md
+  // subagents and cron get AGENTS.md + TOOLS.md + SOUL.md + IDENTITY.md + USER.md
 }
 ```
 
@@ -523,7 +531,7 @@ interface Tool {
 }
 ```
 
-The complete tool list: `read`, `edit`, `write`, `exec`, `process`, `browser`, `canvas`, `nodes`, `message`, `tts`, `agents_list`, `sessions_list`, `sessions_history`, `sessions_send`, `sessions_spawn`, `subagents`, `session_status`, `web_search`, `web_fetch`, `memory_search`, `memory_get`.
+The complete tool list (25 core tools): `read`, `write`, `edit`, `apply_patch`, `exec`, `process`, `grep`, `find`, `ls`, `web_search`, `web_fetch`, `memory_search`, `memory_get`, `sessions_list`, `sessions_history`, `sessions_send`, `sessions_spawn`, `subagents`, `session_status`, `browser`, `canvas`, `message`, `cron`, `gateway`, `nodes`, `agents_list`, `image`, `tts`.
 
 ---
 
@@ -1286,9 +1294,9 @@ Information about the human user — preferences, context, background.
 
 Instructions for heartbeat/cron-triggered runs.
 
-### BOOTSTRAP.md — Custom Bootstrap (Optional)
+### BOOTSTRAP.md — One-Time Onboarding (Optional)
 
-Any additional custom content to inject into the system prompt.
+A one-time first-run ritual for new workspaces. Contains instructions for the agent to have an introductory conversation with the user to establish identity and personality. The agent deletes this file once onboarding is complete.
 
 ### MEMORY.md — Persistent Memory
 
@@ -1313,7 +1321,7 @@ Files are loaded in this exact order (from `workspace.ts`):
 - Per-file max: **20,000 chars**
 - Total max: **150,000 chars**
 - Truncation strategy: **70% head + 20% tail** (10% gap)
-- Subagent/cron sessions only get: **AGENTS.md + TOOLS.md**
+- Subagent/cron sessions only get: **AGENTS.md + TOOLS.md + SOUL.md + IDENTITY.md + USER.md**
 
 ---
 
@@ -1343,31 +1351,38 @@ Tools are **code functions** with JSON Schema parameters. They are:
 }
 ```
 
-**Built-in tools** (20 tools from the sessions.json example):
+**Built-in tools** (25 core tools from `src/agents/tool-catalog.ts`):
 
-| Tool | Properties | Purpose |
-|------|------------|---------|
-| `read` | 4 | Read files from disk |
-| `edit` | 6 | Edit files (diff-based) |
-| `write` | 3 | Write/create files |
-| `exec` | 12 | Execute shell commands |
-| `process` | 12 | Manage processes |
-| `browser` | 28 | Browser automation |
-| `canvas` | 18 | Visual canvas operations |
-| `nodes` | 33 | Node graph operations |
-| `message` | 85 | Send messages to channels |
-| `tts` | 2 | Text-to-speech |
-| `agents_list` | 0 | List configured agents |
-| `sessions_list` | 4 | List active sessions |
-| `sessions_history` | 3 | Read session history |
-| `sessions_send` | 5 | Send message to another session |
-| `sessions_spawn` | 10 | Spawn a subagent |
-| `subagents` | 4 | Manage running subagents |
-| `session_status` | 2 | Get current session info |
-| `web_search` | 6 | Search the web |
-| `web_fetch` | 3 | Fetch a URL |
-| `memory_search` | 3 | Search persistent memory |
-| `memory_get` | 3 | Get memory entries |
+| Tool | Purpose |
+|------|---------|
+| `read` | Read files from disk |
+| `write` | Write/create files |
+| `edit` | Edit files (diff-based) |
+| `apply_patch` | Apply unified diff patches |
+| `exec` | Execute shell commands |
+| `process` | Manage processes |
+| `grep` | Search file contents |
+| `find` | Find files by pattern |
+| `ls` | List directory contents |
+| `web_search` | Search the web |
+| `web_fetch` | Fetch a URL |
+| `memory_search` | Search persistent memory |
+| `memory_get` | Get memory entries |
+| `sessions_list` | List active sessions |
+| `sessions_history` | Read session history |
+| `sessions_send` | Send message to another session |
+| `sessions_spawn` | Spawn a subagent |
+| `subagents` | Manage running subagents |
+| `session_status` | Get current session info |
+| `browser` | Browser automation |
+| `canvas` | Visual canvas operations |
+| `message` | Send messages to channels |
+| `cron` | Manage cron/scheduled jobs |
+| `gateway` | Gateway control operations |
+| `nodes` | Node graph operations |
+| `agents_list` | List configured agents |
+| `image` | Image generation/manipulation |
+| `tts` | Text-to-speech |
 
 ### Skills — Markdown Instructions (Progressive Loading)
 
