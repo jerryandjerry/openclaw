@@ -130,8 +130,7 @@ Examples:
 
 5. Director reviews work
    - Reads agent's work from agent's STUDY/ folder
-   - Writes review comments in own STUDY/ folder:
-     STUDY/AGENT_{DIRECTOR}/{date}/{agent}_{task}_review.md
+   - Writes review comments in own STUDY/ folder (STUDY/AGENT_JACOB/)
    - Sends review file path to agent via message
 
 6. Agent revises → loop back to step 5 until Director approves
