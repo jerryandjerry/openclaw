@@ -487,6 +487,290 @@ const headRatio = 0.7;
 const tailRatio = 0.2;
 ```
 
+### Bootstrap File Resolution Pipeline
+
+After loading and filtering, bootstrap files pass through a complete pipeline before reaching the system prompt.
+
+**File:** `src/agents/bootstrap-files.ts`
+
+```typescript
+export async function resolveBootstrapFilesForRun(params) {
+  // 1. Load raw files from disk (cached by mtime)
+  const rawFiles = await getOrLoadBootstrapFiles({ workspaceDir, sessionKey });
+
+  // 2. Filter by session type (subagent/cron get minimal set)
+  // 3. Filter by context mode (lightweight heartbeat gets only HEARTBEAT.md)
+  const bootstrapFiles = applyContextModeFilter({
+    files: filterBootstrapFilesForSession(rawFiles, sessionKey),
+    contextMode: params.contextMode,   // "full" (default) or "lightweight"
+    runKind: params.runKind,            // "default", "heartbeat", or "cron"
+  });
+
+  // 4. Run bootstrap hooks — hooks can ADD, REMOVE, or MUTATE files
+  const updated = await applyBootstrapHookOverrides({
+    files: bootstrapFiles,
+    workspaceDir, config, sessionKey, sessionId, agentId,
+  });
+
+  // 5. Sanitize (drop entries with missing/invalid paths)
+  return sanitizeBootstrapFiles(updated, params.warn);
+}
+```
+
+> **Note:** `contextMode` is `"lightweight"` ONLY when the agent's config has `heartbeat.lightContext: true`. By default it's `"full"`, so ALL bootstrap files are loaded for every run (including heartbeats).
+
+### Step 6a: Apply Bootstrap Hook Overrides
+
+**File:** `src/agents/bootstrap-hooks.ts`
+
+After context mode filtering, `applyBootstrapHookOverrides` fires the `agent:bootstrap` internal hook event. Registered hooks receive the `bootstrapFiles` array and can mutate it (add, remove, or modify files).
+
+```typescript
+export async function applyBootstrapHookOverrides(params) {
+  const context: AgentBootstrapHookContext = {
+    workspaceDir: params.workspaceDir,
+    bootstrapFiles: params.files,       // ← hooks can mutate this array
+    cfg: params.config,
+    sessionKey, sessionId, agentId,
+  };
+  const event = createInternalHookEvent("agent", "bootstrap", sessionKey, context);
+  await triggerInternalHook(event);     // ← fires all registered agent:bootstrap handlers
+  const updated = (event.context as AgentBootstrapHookContext).bootstrapFiles;
+  return Array.isArray(updated) ? updated : params.files;
+}
+```
+
+This fires **every run** (message, heartbeat, cron) — not just when custom hook folders exist. Bundled hooks are always registered at gateway startup.
+
+### The Hook System: Two Independent Systems
+
+**What are hooks?** Each hook name is a **moment** in the agent's workflow — a specific point where the system pauses and asks "does anyone want to do something here?" You register a function at that moment via `api.on("moment_name", handler)`, and the system calls your function every time that moment occurs. Some moments are **observe-only** (your function sees what happened but can't change it), and some are **gating** (your function can block, cancel, or modify what's about to happen).
+
+OpenClaw has **two separate hook systems** that operate at different layers:
+
+#### 1. Internal Hooks (HOOK.md files)
+
+**Files:** `src/hooks/internal-hooks.ts`, `src/hooks/loader.ts`, `src/hooks/workspace.ts`
+
+Internal hooks are **event-driven handlers** discovered from HOOK.md files in directories. They fire during the agent lifecycle and are mostly **observe-only** (logging, metrics, memory) — except `agent:bootstrap` which can **mutate** bootstrap files.
+
+**Discovery & Precedence:**
+
+```
+Hook directories scanned (later wins):
+  1. Extra dirs (config: hooks.internal.load.extraDirs)
+  2. Bundled hooks (dist/hooks/ — shipped with OpenClaw)
+  3. Managed hooks (~/.openclaw/hooks/)
+  4. Workspace hooks (<workspace>/hooks/)
+```
+
+Each hook directory contains:
+```
+hooks/
+  my-hook/
+    HOOK.md          ← frontmatter: name, description, events
+    handler.ts       ← exported function that receives InternalHookEvent
+```
+
+**Registration & Trigger:**
+
+```typescript
+// src/hooks/internal-hooks.ts
+// Global handler registry (survives bundle splitting via globalThis)
+const handlers = new Map<string, InternalHookHandler[]>();
+
+export function registerInternalHook(eventKey: string, handler: InternalHookHandler): void {
+  handlers.get(eventKey)?.push(handler) ?? handlers.set(eventKey, [handler]);
+}
+
+export async function triggerInternalHook(event: InternalHookEvent): Promise<void> {
+  const typeHandlers = handlers.get(event.type) ?? [];              // e.g. "agent"
+  const specificHandlers = handlers.get(`${event.type}:${event.action}`) ?? [];  // e.g. "agent:bootstrap"
+  for (const handler of [...typeHandlers, ...specificHandlers]) {
+    await handler(event);  // errors logged but don't stop other handlers
+  }
+}
+```
+
+**Gating:** Internal hooks only load when `hooks.internal.enabled: true` in config (`src/hooks/loader.ts:51`).
+
+**Internal Hook Event Types:**
+
+| Event | Action | Fired From | Can Mutate? |
+|-------|--------|------------|-------------|
+| `agent` | `bootstrap` | `src/agents/bootstrap-hooks.ts` | YES — can mutate `bootstrapFiles` array |
+| `gateway` | `startup` | `src/gateway/server-startup.ts` | No |
+| `command` | `new` / `reset` / `stop` | `src/auto-reply/reply/commands-core.ts` | No |
+| `session` | `compact:before` / `compact:after` | `src/agents/pi-embedded-runner/compact.ts` | No |
+| `message` | `received` | `src/auto-reply/reply/dispatch-from-config.ts` | No |
+| `message` | `sent` | `src/infra/outbound/deliver.ts` | No |
+| `message` | `transcribed` | `src/auto-reply/reply/message-preprocess-hooks.ts` | No |
+| `message` | `preprocessed` | `src/auto-reply/reply/message-preprocess-hooks.ts` | No |
+
+**Bundled hook example:** `bootstrap-extra-files` — listens to `agent:bootstrap`, injects extra files from glob patterns configured in `hooks.internal.entries.bootstrap-extra-files.paths`.
+
+#### 2. Plugin Hooks (Extension-Registered)
+
+**Files:** `src/plugins/hooks.ts`, `src/plugins/registry.ts`
+
+Plugin hooks are registered by **extension plugins** via the plugin API (`api.on(hookName, handler)`). Unlike internal hooks, plugin hooks can **block tool calls** and **cancel outgoing messages**.
+
+**Registration:**
+
+```typescript
+// src/plugins/registry.ts — createApi() gives plugins this interface:
+const api = {
+  on: (hookName, handler) => registerTypedHook(registry, pluginId, hookName, handler, priority),
+  // ... other API methods
+};
+```
+
+**All Plugin Hook Types (19 in `PluginHookName` + 4 in handler map):**
+
+Defined in `src/plugins/types.ts:321–341` (PluginHookName) and `src/plugins/types.ts:787–884` (PluginHookHandlerMap).
+
+**Agent Lifecycle Hooks** — context: `PluginHookAgentContext` (agentId, sessionKey, workspaceDir, trigger, channelId)
+
+| Hook Name | Execution | Can Modify? | Event Data | Purpose |
+|-----------|-----------|-------------|------------|---------|
+| `before_model_resolve` | Sequential | YES — return `{modelOverride, providerOverride}` | `{prompt}` | Override model/provider selection before the LLM call |
+| `before_prompt_build` | Sequential | YES — return `{systemPrompt, prependContext, prependSystemContext, appendSystemContext}` | `{prompt, messages[]}` | Inject into or replace the system prompt |
+| `before_agent_start` | Sequential | YES — combines model resolve + prompt build (legacy) | `{prompt, messages?[]}` | Legacy hook: both model override and prompt injection in one |
+| `llm_input` | Parallel (fire-and-forget) | No | `{runId, sessionId, provider, model, systemPrompt, prompt, historyMessages, imagesCount}` | Observe the exact payload sent to the LLM |
+| `llm_output` | Parallel (fire-and-forget) | No | `{runId, sessionId, provider, model, assistantTexts, usage{input,output,cacheRead,cacheWrite,total}}` | Observe the LLM response and token usage |
+| `agent_end` | Parallel (fire-and-forget) | No | `{messages[], success, error?, durationMs?}` | Observe agent run completion |
+
+**Session Lifecycle Hooks** — context: `PluginHookSessionContext` (agentId, sessionId, sessionKey)
+
+| Hook Name | Execution | Can Modify? | Event Data | Purpose |
+|-----------|-----------|-------------|------------|---------|
+| `session_start` | Parallel (fire-and-forget) | No | `{sessionId, sessionKey?, resumedFrom?}` | Observe session creation or resumption |
+| `session_end` | Parallel (fire-and-forget) | No | `{sessionId, sessionKey?, messageCount, durationMs?}` | Observe session completion |
+| `before_compaction` | Parallel (fire-and-forget) | No | `{messageCount, compactingCount?, tokenCount?, messages?[], sessionFile?}` | Observe before context compaction (can read sessionFile async) |
+| `after_compaction` | Parallel (fire-and-forget) | No | `{messageCount, tokenCount?, compactedCount, sessionFile?}` | Observe after context compaction |
+| `before_reset` | Parallel (fire-and-forget) | No | `{sessionFile?, messages?[], reason?}` | Observe before /new or /reset clears a session |
+
+**Message Hooks** — context: `PluginHookMessageContext` (channelId, accountId?, conversationId?)
+
+| Hook Name | Execution | Can Modify? | Event Data | Purpose |
+|-----------|-----------|-------------|------------|---------|
+| `message_received` | Parallel (fire-and-forget) | No | `{from, content, timestamp?, metadata?}` | Observe incoming messages |
+| `message_sending` | Sequential | YES — return `{content?, cancel?}` | `{to, content, metadata?}` | **CANCEL** or rewrite outgoing messages before delivery |
+| `message_sent` | Parallel (fire-and-forget) | No | `{to, content, success, error?}` | Observe delivery confirmations |
+
+**Tool Hooks** — context: `PluginHookToolContext` (agentId?, sessionKey?, sessionId?, runId?, toolName, toolCallId?)
+
+| Hook Name | Execution | Can Modify? | Event Data | Purpose |
+|-----------|-----------|-------------|------------|---------|
+| `before_tool_call` | Sequential | YES — return `{params?, block?, blockReason?}` | `{toolName, params, runId?, toolCallId?}` | **BLOCK** specific tool calls or modify params |
+| `after_tool_call` | Parallel (fire-and-forget) | No | `{toolName, params, runId?, toolCallId?, result?, error?, durationMs?}` | Observe tool results |
+| `tool_result_persist` | Sequential (**sync**) | YES — return `{message?}` to replace persisted message | `{toolName?, toolCallId?, message, isSynthetic?}` | Rewrite tool results before session storage |
+| `before_message_write` | Sequential (**sync**) | YES — return `{block?, message?}` | `{message, sessionKey?, agentId?}` | **BLOCK** message persistence to JSONL |
+
+**Subagent Hooks** — context: `PluginHookSubagentContext` (runId?, childSessionKey?, requesterSessionKey?)
+
+| Hook Name | Execution | Can Modify? | Event Data | Purpose |
+|-----------|-----------|-------------|------------|---------|
+| `subagent_spawning` | Sequential | YES — return `{status: "ok"/"error", threadBindingReady?}` | `{childSessionKey, agentId, label?, mode, requester?, threadRequested}` | Gate or prepare for subagent spawn |
+| `subagent_delivery_target` | Sequential | YES — return `{origin?}` to override delivery target | `{childSessionKey, requesterSessionKey, requesterOrigin?, childRunId?, spawnMode?, expectsCompletionMessage}` | Override where subagent delivers results |
+| `subagent_spawned` | Parallel (fire-and-forget) | No | `{...spawnBase, runId}` | Observe subagent successfully started |
+| `subagent_ended` | Parallel (fire-and-forget) | No | `{targetSessionKey, targetKind, reason, outcome?, error?, endedAt?}` | Observe subagent completion |
+
+**Gateway Hooks** — context: `PluginHookGatewayContext` (port?)
+
+| Hook Name | Execution | Can Modify? | Event Data | Purpose |
+|-----------|-----------|-------------|------------|---------|
+| `gateway_start` | Parallel (fire-and-forget) | No | `{port}` | Observe gateway startup |
+| `gateway_stop` | Parallel (fire-and-forget) | No | `{reason?}` | Observe gateway shutdown |
+
+**Example: blocking a tool call:**
+
+```typescript
+// In a plugin's activate() function:
+api.on("before_tool_call", async (event) => {
+  if (event.toolName === "dangerous_tool") {
+    return { block: true, blockReason: "This tool is not allowed" };
+  }
+  return {};
+});
+```
+
+**Example: injecting context into every agent's system prompt:**
+
+```typescript
+api.on("before_prompt_build", async (event, ctx) => {
+  return {
+    appendSystemContext: `\nAgent ${ctx.agentId} — always write TODOs to HEARTBEAT.md before acting.`,
+  };
+});
+```
+
+**Example: cancelling an outgoing message:**
+
+```typescript
+api.on("message_sending", async (event) => {
+  if (event.content.includes("DRAFT")) {
+    return { cancel: true };  // message never sent
+  }
+  return { content: event.content };  // pass through
+});
+```
+
+### Hook Timeline During a Single Message
+
+The complete sequence of all hook moments from message arrival to delivery:
+
+```
+GATEWAY
+  gateway_start              (plugin: observe)      — gateway process starts
+
+INCOMING MESSAGE
+  1. message_received         (plugin: observe)      — incoming message arrives
+     message:received         (internal: observe)
+  2. message:transcribed      (internal: observe)    — audio transcribed (if applicable)
+  3. message:preprocessed     (internal: observe)    — message enriched with context
+
+AGENT SETUP
+  4. session_start            (plugin: observe)      — session created or resumed
+  5. agent:bootstrap          (internal: MUTATE)     — bootstrap files assembled
+     before_agent_start       (plugin: inject+override) — legacy combined hook
+     before_model_resolve     (plugin: override)     — model/provider selection
+     before_prompt_build      (plugin: inject)       — system prompt modified
+
+LLM CALL
+  6. llm_input                (plugin: observe)      — payload sent to LLM
+  7. llm_output               (plugin: observe)      — LLM response received
+
+TOOL EXECUTION (repeats per tool call)
+  8. before_tool_call         (plugin: BLOCK)        — each tool call gated
+  9. after_tool_call          (plugin: observe)      — tool result observed
+ 10. tool_result_persist      (plugin: rewrite)      — result rewritten before storage
+
+MESSAGE PERSISTENCE
+ 11. before_message_write     (plugin: BLOCK)        — message persistence gated
+
+OUTGOING MESSAGE
+ 12. message_sending          (plugin: CANCEL/MODIFY) — outgoing message gated
+ 13. message:sent             (internal: observe)    — delivery confirmed
+     message_sent             (plugin: observe)
+
+SESSION LIFECYCLE
+ 14. before_compaction        (plugin: observe)      — context getting long
+ 15. after_compaction         (plugin: observe)      — context compacted
+ 16. before_reset             (plugin: observe)      — /new or /reset issued
+ 17. agent_end                (plugin: observe)      — agent run finishes
+ 18. session_end              (plugin: observe)      — session closes
+
+SUBAGENT LIFECYCLE (when agent spawns child agents)
+ 19. subagent_spawning        (plugin: gate)         — subagent about to spawn
+ 20. subagent_spawned         (plugin: observe)      — subagent started
+ 21. subagent_delivery_target (plugin: override)     — where child delivers results
+ 22. subagent_ended           (plugin: observe)      — subagent finished
+
+GATEWAY SHUTDOWN
+ 23. gateway_stop             (plugin: observe)      — gateway process stops
+```
+
 ---
 
 ## Step 7: Create Tool Definitions (attempt.ts:288–327)

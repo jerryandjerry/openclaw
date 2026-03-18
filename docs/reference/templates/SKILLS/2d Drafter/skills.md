@@ -20,7 +20,6 @@ Skills to install in `workspace-2d_drafter/skills/`.
 
 | Skill | Description | Source |
 |-------|-------------|--------|
-| ComfyUI_Skills_OpenClaw | Controllable image generation pipeline via ComfyUI | https://github.com/HuangYuChuh/ComfyUI_Skills_OpenClaw |
 | agent-media | Full multimedia delivery | https://github.com/openclaw/skills/tree/main/skills/nevo-david/agent-media/SKILL.md |
 
 ## Documents & Office School

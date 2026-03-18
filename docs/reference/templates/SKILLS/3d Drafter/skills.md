@@ -21,7 +21,6 @@ Skills to install in `workspace-3d_drafter/skills/`.
 | Skill | Description | Source |
 |-------|-------------|--------|
 | 3d-model-generation | 3D model generation | https://github.com/openclaw/skills/tree/main/skills/eftalyurtseven/3d-model-generation/SKILL.md |
-| ComfyUI_Skills_OpenClaw | Controllable image generation pipeline via ComfyUI | https://github.com/HuangYuChuh/ComfyUI_Skills_OpenClaw |
 
 ## Content & Communications School
 
