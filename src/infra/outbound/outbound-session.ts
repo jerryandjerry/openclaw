@@ -3,9 +3,12 @@ import type { ChatType } from "../../channels/chat-type.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type { ChannelId } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
-import { recordSessionMetaFromInbound, resolveStorePath } from "../../config/sessions.js";
-import type { RoutePeer } from "../../routing/resolve-route.js";
-import { buildOutboundBaseSessionKey } from "./base-session-key.js";
+import {
+  recordSessionMetaFromInbound,
+  resolveStorePath,
+} from "../../config/sessions/inbound.runtime.js";
+import { buildAgentSessionKey, type RoutePeer } from "../../routing/resolve-route.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import type { ResolvedMessagingTarget } from "./target-resolver.js";
 
 export type OutboundSessionRoute = {
@@ -24,10 +27,15 @@ export type ResolveOutboundSessionRouteParams = {
   agentId: string;
   accountId?: string | null;
   target: string;
+  currentSessionKey?: string;
   resolvedTarget?: ResolvedMessagingTarget;
   replyToId?: string | null;
   threadId?: string | number | null;
 };
+
+function resolveOutboundChannelPlugin(channel: ChannelId) {
+  return getChannelPlugin(channel);
+}
 
 function stripProviderPrefix(raw: string, channel: string): string {
   const trimmed = raw.trim();
@@ -55,7 +63,7 @@ function inferPeerKind(params: {
     return "channel";
   }
   if (resolvedKind === "group") {
-    const plugin = getChannelPlugin(params.channel);
+    const plugin = resolveOutboundChannelPlugin(params.channel);
     const chatTypes = plugin?.capabilities?.chatTypes ?? [];
     const supportsChannel = chatTypes.includes("channel");
     const supportsGroup = chatTypes.includes("group");
@@ -74,7 +82,14 @@ function buildBaseSessionKey(params: {
   accountId?: string | null;
   peer: RoutePeer;
 }): string {
-  return buildOutboundBaseSessionKey(params);
+  return buildAgentSessionKey({
+    agentId: params.agentId,
+    channel: params.channel,
+    accountId: params.accountId,
+    peer: params.peer,
+    dmScope: params.cfg.session?.dmScope ?? "main",
+    identityLinks: params.cfg.session?.identityLinks,
+  });
 }
 
 function resolveFallbackSession(
@@ -97,6 +112,7 @@ function resolveFallbackSession(
     cfg: params.cfg,
     agentId: params.agentId,
     channel: params.channel,
+    accountId: params.accountId,
     peer,
   });
   const chatType = peerKind === "direct" ? "direct" : peerKind === "channel" ? "channel" : "group";
@@ -123,32 +139,22 @@ export async function resolveOutboundSessionRoute(
     return null;
   }
   const nextParams = { ...params, target };
-  const pluginRoute = await getChannelPlugin(
-    params.channel,
-  )?.messaging?.resolveOutboundSessionRoute?.({
-    cfg: nextParams.cfg,
-    agentId: nextParams.agentId,
-    accountId: nextParams.accountId,
-    target,
-    resolvedTarget: nextParams.resolvedTarget,
-    replyToId: nextParams.replyToId,
-    threadId: nextParams.threadId,
-  });
-  if (pluginRoute) {
-    return pluginRoute;
+  const resolver = resolveOutboundChannelPlugin(params.channel)?.messaging
+    ?.resolveOutboundSessionRoute;
+  if (resolver) {
+    return await resolver(nextParams);
   }
   return resolveFallbackSession(nextParams);
 }
 
 export async function ensureOutboundSessionEntry(params: {
   cfg: OpenClawConfig;
-  agentId: string;
   channel: ChannelId;
   accountId?: string | null;
   route: OutboundSessionRoute;
 }): Promise<void> {
   const storePath = resolveStorePath(params.cfg.session?.store, {
-    agentId: params.agentId,
+    agentId: resolveAgentIdFromSessionKey(params.route.sessionKey),
   });
   const ctx: MsgContext = {
     From: params.route.from,

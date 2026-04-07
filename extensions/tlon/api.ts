@@ -1,2 +1,3 @@
-export * from "openclaw/plugin-sdk/tlon";
-export * from "./setup-api.js";
+export * from "./runtime-api.js";
+export { tlonPlugin } from "./src/channel.js";
+export { setTlonRuntime } from "./src/runtime.js";

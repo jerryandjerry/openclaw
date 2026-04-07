@@ -1,26 +1,36 @@
+import { resolveDefaultModelForAgent } from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
-import { resetInboundDedupe } from "openclaw/plugin-sdk/reply-runtime";
-import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
-import type { GetReplyOptions, ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
+import {
+  createReplyDispatcher,
+  resetInboundDedupe,
+  type GetReplyOptions,
+  type MsgContext,
+  type ReplyPayload,
+} from "openclaw/plugin-sdk/reply-runtime";
 import type { MockFn } from "openclaw/plugin-sdk/testing";
 import { beforeEach, vi } from "vitest";
+import type { TelegramBotDeps } from "./bot-deps.js";
 
-type AnyMock = MockFn<(...args: unknown[]) => unknown>;
-type AnyAsyncMock = MockFn<(...args: unknown[]) => Promise<unknown>>;
+type AnyMock = ReturnType<typeof vi.fn>;
+type AnyAsyncMock = ReturnType<typeof vi.fn>;
+type LoadConfigFn = typeof import("openclaw/plugin-sdk/config-runtime").loadConfig;
+type LoadSessionStoreFn = typeof import("openclaw/plugin-sdk/config-runtime").loadSessionStore;
+type ResolveStorePathFn = typeof import("openclaw/plugin-sdk/config-runtime").resolveStorePath;
+type SessionStore = ReturnType<LoadSessionStoreFn>;
+type TelegramBotRuntimeForTest = NonNullable<
+  Parameters<typeof import("./bot.js").setTelegramBotRuntimeForTest>[0]
+>;
 type DispatchReplyWithBufferedBlockDispatcherFn =
-  typeof import("openclaw/plugin-sdk/reply-runtime").dispatchReplyWithBufferedBlockDispatcher;
+  typeof import("openclaw/plugin-sdk/reply-dispatch-runtime").dispatchReplyWithBufferedBlockDispatcher;
 type DispatchReplyWithBufferedBlockDispatcherResult = Awaited<
   ReturnType<DispatchReplyWithBufferedBlockDispatcherFn>
 >;
-type DispatchReplyHarnessParams = {
-  ctx: MsgContext;
-  replyOptions?: GetReplyOptions;
-  dispatcherOptions?: {
-    typingCallbacks?: {
-      start?: () => void | Promise<void>;
-    };
-    deliver?: (payload: ReplyPayload, info: { kind: "final" }) => void | Promise<void>;
-  };
+type DispatchReplyHarnessParams = Parameters<DispatchReplyWithBufferedBlockDispatcherFn>[0];
+
+const _EMPTY_REPLY_COUNTS: DispatchReplyWithBufferedBlockDispatcherResult["counts"] = {
+  block: 0,
+  final: 0,
+  tool: 0,
 };
 
 const { sessionStorePath } = vi.hoisted(() => ({
@@ -35,39 +45,46 @@ export function getLoadWebMediaMock(): AnyMock {
   return loadWebMedia;
 }
 
-vi.doMock("openclaw/plugin-sdk/web-media", () => ({
+vi.mock("openclaw/plugin-sdk/web-media", () => ({
+  loadWebMedia,
+}));
+vi.mock("openclaw/plugin-sdk/web-media.js", () => ({
   loadWebMedia,
 }));
 
-const { loadConfig } = vi.hoisted((): { loadConfig: AnyMock } => ({
-  loadConfig: vi.fn(() => ({})),
-}));
-const { resolveStorePathMock } = vi.hoisted((): { resolveStorePathMock: AnyMock } => ({
-  resolveStorePathMock: vi.fn((storePath?: string) => storePath ?? sessionStorePath),
-}));
+const { loadConfig, loadSessionStoreMock, resolveStorePathMock, sessionStoreEntries } = vi.hoisted(
+  (): {
+    loadConfig: MockFn<LoadConfigFn>;
+    loadSessionStoreMock: MockFn<LoadSessionStoreFn>;
+    resolveStorePathMock: MockFn<ResolveStorePathFn>;
+    sessionStoreEntries: { value: SessionStore };
+  } => ({
+    loadConfig: vi.fn<LoadConfigFn>(() => ({})),
+    loadSessionStoreMock: vi.fn<LoadSessionStoreFn>(
+      (_storePath, _opts) => sessionStoreEntries.value,
+    ),
+    resolveStorePathMock: vi.fn<ResolveStorePathFn>(
+      (storePath?: string) => storePath ?? sessionStorePath,
+    ),
+    sessionStoreEntries: { value: {} as SessionStore },
+  }),
+);
 
 export function getLoadConfigMock(): AnyMock {
   return loadConfig;
 }
-vi.doMock("openclaw/plugin-sdk/config-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/config-runtime")>();
-  return {
-    ...actual,
-    loadConfig,
-  };
-});
 
-vi.doMock("openclaw/plugin-sdk/config-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/config-runtime")>();
-  return {
-    ...actual,
-    resolveStorePath: resolveStorePathMock,
-  };
-});
+export function getLoadSessionStoreMock(): AnyMock {
+  return loadSessionStoreMock;
+}
+
+export function setSessionStoreEntriesForTest(entries: SessionStore) {
+  sessionStoreEntries.value = JSON.parse(JSON.stringify(entries)) as SessionStore;
+}
 
 const { readChannelAllowFromStore, upsertChannelPairingRequest } = vi.hoisted(
   (): {
-    readChannelAllowFromStore: AnyAsyncMock;
+    readChannelAllowFromStore: MockFn<TelegramBotDeps["readChannelAllowFromStore"]>;
     upsertChannelPairingRequest: AnyAsyncMock;
   } => ({
     readChannelAllowFromStore: vi.fn(async () => [] as string[]),
@@ -86,17 +103,13 @@ export function getUpsertChannelPairingRequestMock(): AnyAsyncMock {
   return upsertChannelPairingRequest;
 }
 
-vi.doMock("openclaw/plugin-sdk/conversation-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/conversation-runtime")>();
-  return {
-    ...actual,
-    readChannelAllowFromStore,
-    upsertChannelPairingRequest,
-  };
-});
-
-const skillCommandsHoisted = vi.hoisted(() => ({
+const skillCommandListHoisted = vi.hoisted(() => ({
   listSkillCommandsForAgents: vi.fn(() => []),
+}));
+const modelProviderDataHoisted = vi.hoisted(() => ({
+  buildModelsProviderData: vi.fn(),
+}));
+const replySpyHoisted = vi.hoisted(() => ({
   replySpy: vi.fn(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
     await opts?.onReplyStart?.();
     return undefined;
@@ -107,51 +120,125 @@ const skillCommandsHoisted = vi.hoisted(() => ({
       configOverride?: OpenClawConfig,
     ) => Promise<ReplyPayload | ReplyPayload[] | undefined>
   >,
-  dispatchReplyWithBufferedBlockDispatcher: vi.fn<DispatchReplyWithBufferedBlockDispatcherFn>(
-    async (params: DispatchReplyHarnessParams) => {
-      const result: DispatchReplyWithBufferedBlockDispatcherResult = {
-        queuedFinal: false,
-        counts: {} as DispatchReplyWithBufferedBlockDispatcherResult["counts"],
-      };
-      await params.dispatcherOptions?.typingCallbacks?.start?.();
-      const reply = await skillCommandsHoisted.replySpy(params.ctx, params.replyOptions);
-      const payloads = reply === undefined ? [] : Array.isArray(reply) ? reply : [reply];
-      for (const payload of payloads) {
-        await params.dispatcherOptions?.deliver?.(payload, { kind: "final" });
-      }
-      return result;
+}));
+
+async function dispatchHarnessReplies(
+  params: DispatchReplyHarnessParams,
+  runReply: (
+    params: DispatchReplyHarnessParams,
+  ) => Promise<ReplyPayload | ReplyPayload[] | undefined>,
+): Promise<DispatchReplyWithBufferedBlockDispatcherResult> {
+  await params.dispatcherOptions.typingCallbacks?.onReplyStart?.();
+  const reply = await runReply(params);
+  const payloads: ReplyPayload[] =
+    reply === undefined ? [] : Array.isArray(reply) ? reply : [reply];
+  const dispatcher = createReplyDispatcher({
+    deliver: async (payload, info) => {
+      await params.dispatcherOptions.deliver?.(payload, info);
     },
+    responsePrefix: params.dispatcherOptions.responsePrefix,
+    responsePrefixContextProvider: params.dispatcherOptions.responsePrefixContextProvider,
+    responsePrefixContext: params.dispatcherOptions.responsePrefixContext,
+    onHeartbeatStrip: params.dispatcherOptions.onHeartbeatStrip,
+    onSkip: (payload, info) => {
+      params.dispatcherOptions.onSkip?.(payload, info);
+    },
+    onError: (err, info) => {
+      params.dispatcherOptions.onError?.(err, info);
+    },
+  });
+  let finalCount = 0;
+  for (const payload of payloads) {
+    if (dispatcher.sendFinalReply(payload)) {
+      finalCount += 1;
+    }
+  }
+  dispatcher.markComplete();
+  await dispatcher.waitForIdle();
+  return {
+    queuedFinal: finalCount > 0,
+    counts: {
+      block: 0,
+      final: finalCount,
+      tool: 0,
+    },
+  };
+}
+
+const dispatchReplyHoisted = vi.hoisted(() => ({
+  dispatchReplyWithBufferedBlockDispatcher: vi.fn<DispatchReplyWithBufferedBlockDispatcherFn>(
+    async (params: DispatchReplyHarnessParams) =>
+      await dispatchHarnessReplies(params, async (dispatchParams) => {
+        return await replySpyHoisted.replySpy(dispatchParams.ctx, dispatchParams.replyOptions);
+      }),
   ),
 }));
-export const listSkillCommandsForAgents = skillCommandsHoisted.listSkillCommandsForAgents;
-export const replySpy = skillCommandsHoisted.replySpy;
+export const listSkillCommandsForAgents = skillCommandListHoisted.listSkillCommandsForAgents;
+const buildModelsProviderData = modelProviderDataHoisted.buildModelsProviderData;
+export const replySpy = replySpyHoisted.replySpy;
 export const dispatchReplyWithBufferedBlockDispatcher =
-  skillCommandsHoisted.dispatchReplyWithBufferedBlockDispatcher;
+  dispatchReplyHoisted.dispatchReplyWithBufferedBlockDispatcher;
+const menuSyncHoisted = vi.hoisted(() => ({
+  syncTelegramMenuCommands: vi.fn(async ({ bot, commandsToRegister }) => {
+    await bot.api.setMyCommands(commandsToRegister);
+  }),
+}));
+export const syncTelegramMenuCommands = menuSyncHoisted.syncTelegramMenuCommands;
 
-vi.doMock("openclaw/plugin-sdk/reply-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/reply-runtime")>();
-  return {
-    ...actual,
-    listSkillCommandsForAgents: skillCommandsHoisted.listSkillCommandsForAgents,
-    getReplyFromConfig: skillCommandsHoisted.replySpy,
-    __replySpy: skillCommandsHoisted.replySpy,
-    dispatchReplyWithBufferedBlockDispatcher:
-      skillCommandsHoisted.dispatchReplyWithBufferedBlockDispatcher,
+function parseModelRef(raw: string): { provider?: string; model: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { model: "" };
+  }
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex > 0 && slashIndex < trimmed.length - 1) {
+    return {
+      provider: trimmed.slice(0, slashIndex),
+      model: trimmed.slice(slashIndex + 1),
+    };
+  }
+  return { model: trimmed };
+}
+
+function createModelsProviderDataFromConfig(cfg: OpenClawConfig): {
+  byProvider: Map<string, Set<string>>;
+  providers: string[];
+  resolvedDefault: { provider: string; model: string };
+  modelNames: Map<string, string>;
+} {
+  const byProvider = new Map<string, Set<string>>();
+  const add = (providerRaw: string | undefined, modelRaw: string | undefined) => {
+    const provider = providerRaw?.trim().toLowerCase();
+    const model = modelRaw?.trim();
+    if (!provider || !model) {
+      return;
+    }
+    const existing = byProvider.get(provider) ?? new Set<string>();
+    existing.add(model);
+    byProvider.set(provider, existing);
   };
-});
+
+  const resolvedDefault = resolveDefaultModelForAgent({ cfg });
+  add(resolvedDefault.provider, resolvedDefault.model);
+
+  for (const raw of Object.keys(cfg.agents?.defaults?.models ?? {})) {
+    const parsed = parseModelRef(raw);
+    add(parsed.provider ?? resolvedDefault.provider, parsed.model);
+  }
+
+  const providers = [...byProvider.keys()].toSorted();
+  return { byProvider, providers, resolvedDefault, modelNames: new Map<string, string>() };
+}
 
 const systemEventsHoisted = vi.hoisted(() => ({
-  enqueueSystemEventSpy: vi.fn(),
+  enqueueSystemEventSpy: vi.fn<TelegramBotDeps["enqueueSystemEvent"]>(() => false),
 }));
-export const enqueueSystemEventSpy: AnyMock = systemEventsHoisted.enqueueSystemEventSpy;
-
-vi.doMock("openclaw/plugin-sdk/infra-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/infra-runtime")>();
-  return {
-    ...actual,
-    enqueueSystemEvent: systemEventsHoisted.enqueueSystemEventSpy,
-  };
-});
+export const enqueueSystemEventSpy: MockFn<TelegramBotDeps["enqueueSystemEvent"]> =
+  systemEventsHoisted.enqueueSystemEventSpy;
+const execApprovalHoisted = vi.hoisted(() => ({
+  resolveExecApprovalSpy: vi.fn(async () => undefined),
+}));
+export const resolveExecApprovalSpy = execApprovalHoisted.resolveExecApprovalSpy;
 
 const sentMessageCacheHoisted = vi.hoisted(() => ({
   wasSentByBot: vi.fn(() => false),
@@ -169,13 +256,13 @@ vi.doMock("./sent-message-cache.js", () => ({
 // of module evaluation order across different test files.
 const grammySpies = vi.hoisted(() => ({
   useSpy: vi.fn() as MockFn<(arg: unknown) => void>,
-  middlewareUseSpy: vi.fn() as AnyMock,
-  onSpy: vi.fn() as AnyMock,
-  stopSpy: vi.fn() as AnyMock,
-  commandSpy: vi.fn() as AnyMock,
-  botCtorSpy: vi.fn() as AnyMock,
+  middlewareUseSpy: vi.fn(),
+  onSpy: vi.fn(),
+  stopSpy: vi.fn(),
+  commandSpy: vi.fn(),
+  botCtorSpy: vi.fn((_: string, __?: { client?: { fetch?: typeof fetch } }) => undefined),
   answerCallbackQuerySpy: vi.fn(async () => undefined) as AnyAsyncMock,
-  sendChatActionSpy: vi.fn() as AnyMock,
+  sendChatActionSpy: vi.fn(),
   editMessageTextSpy: vi.fn(async () => ({ message_id: 88 })) as AnyAsyncMock,
   editMessageReplyMarkupSpy: vi.fn(async () => ({ message_id: 88 })) as AnyAsyncMock,
   sendMessageDraftSpy: vi.fn(async () => true) as AnyAsyncMock,
@@ -185,32 +272,34 @@ const grammySpies = vi.hoisted(() => ({
     username: "openclaw_bot",
     has_topics_enabled: true,
   })) as AnyAsyncMock,
+  getChatSpy: vi.fn(async () => undefined) as AnyAsyncMock,
   sendMessageSpy: vi.fn(async () => ({ message_id: 77 })) as AnyAsyncMock,
   sendAnimationSpy: vi.fn(async () => ({ message_id: 78 })) as AnyAsyncMock,
   sendPhotoSpy: vi.fn(async () => ({ message_id: 79 })) as AnyAsyncMock,
   getFileSpy: vi.fn(async () => ({ file_path: "media/file.jpg" })) as AnyAsyncMock,
 }));
 
-export const {
-  useSpy,
-  middlewareUseSpy,
-  onSpy,
-  stopSpy,
-  commandSpy,
-  botCtorSpy,
-  answerCallbackQuerySpy,
-  sendChatActionSpy,
-  editMessageTextSpy,
-  editMessageReplyMarkupSpy,
-  sendMessageDraftSpy,
-  setMessageReactionSpy,
-  setMyCommandsSpy,
-  getMeSpy,
-  sendMessageSpy,
-  sendAnimationSpy,
-  sendPhotoSpy,
-  getFileSpy,
-} = grammySpies;
+export const useSpy: MockFn<(arg: unknown) => void> = grammySpies.useSpy;
+export const middlewareUseSpy: AnyMock = grammySpies.middlewareUseSpy;
+export const onSpy: AnyMock = grammySpies.onSpy;
+export const stopSpy: AnyMock = grammySpies.stopSpy;
+export const commandSpy: AnyMock = grammySpies.commandSpy;
+export const botCtorSpy: MockFn<
+  (token: string, options?: { client?: { fetch?: typeof fetch } }) => void
+> = grammySpies.botCtorSpy;
+export const answerCallbackQuerySpy: AnyAsyncMock = grammySpies.answerCallbackQuerySpy;
+export const sendChatActionSpy: AnyMock = grammySpies.sendChatActionSpy;
+export const editMessageTextSpy: AnyAsyncMock = grammySpies.editMessageTextSpy;
+export const editMessageReplyMarkupSpy: AnyAsyncMock = grammySpies.editMessageReplyMarkupSpy;
+export const sendMessageDraftSpy: AnyAsyncMock = grammySpies.sendMessageDraftSpy;
+export const setMessageReactionSpy: AnyAsyncMock = grammySpies.setMessageReactionSpy;
+export const setMyCommandsSpy: AnyAsyncMock = grammySpies.setMyCommandsSpy;
+export const getMeSpy: AnyAsyncMock = grammySpies.getMeSpy;
+export const getChatSpy: AnyAsyncMock = grammySpies.getChatSpy;
+export const sendMessageSpy: AnyAsyncMock = grammySpies.sendMessageSpy;
+export const sendAnimationSpy: AnyAsyncMock = grammySpies.sendAnimationSpy;
+export const sendPhotoSpy: AnyAsyncMock = grammySpies.sendPhotoSpy;
+export const getFileSpy: AnyAsyncMock = grammySpies.getFileSpy;
 
 const runnerHoisted = vi.hoisted(() => ({
   sequentializeMiddleware: vi.fn(async (_ctx: unknown, next?: () => Promise<void>) => {
@@ -224,7 +313,7 @@ const runnerHoisted = vi.hoisted(() => ({
 export const sequentializeSpy: AnyMock = runnerHoisted.sequentializeSpy;
 export let sequentializeKey: ((ctx: unknown) => string) | undefined;
 export const throttlerSpy: AnyMock = runnerHoisted.throttlerSpy;
-export const telegramBotRuntimeForTest = {
+export const telegramBotRuntimeForTest: TelegramBotRuntimeForTest = {
   Bot: class {
     api = {
       config: { use: grammySpies.useSpy },
@@ -236,6 +325,7 @@ export const telegramBotRuntimeForTest = {
       setMessageReaction: grammySpies.setMessageReactionSpy,
       setMyCommands: grammySpies.setMyCommandsSpy,
       getMe: grammySpies.getMeSpy,
+      getChat: grammySpies.getChatSpy,
       sendMessage: grammySpies.sendMessageSpy,
       sendAnimation: grammySpies.sendAnimationSpy,
       sendPhoto: grammySpies.sendPhotoSpy,
@@ -250,23 +340,44 @@ export const telegramBotRuntimeForTest = {
       public token: string,
       public options?: { client?: { fetch?: typeof fetch } },
     ) {
-      grammySpies.botCtorSpy(token, options);
+      (grammySpies.botCtorSpy as unknown as (token: string, options?: unknown) => void)(
+        token,
+        options,
+      );
     }
-  },
-  sequentialize: (keyFn: (ctx: unknown) => string) => {
+  } as unknown as TelegramBotRuntimeForTest["Bot"],
+  sequentialize: ((keyFn: (ctx: unknown) => string) => {
     sequentializeKey = keyFn;
-    return runnerHoisted.sequentializeSpy();
-  },
-  apiThrottler: () => runnerHoisted.throttlerSpy(),
+    return (
+      runnerHoisted.sequentializeSpy as unknown as () => ReturnType<
+        TelegramBotRuntimeForTest["sequentialize"]
+      >
+    )();
+  }) as unknown as TelegramBotRuntimeForTest["sequentialize"],
+  apiThrottler: (() =>
+    (
+      runnerHoisted.throttlerSpy as unknown as () => unknown
+    )()) as unknown as TelegramBotRuntimeForTest["apiThrottler"],
 };
-export const telegramBotDepsForTest = {
+export const telegramBotDepsForTest: TelegramBotDeps = {
   loadConfig,
+  loadSessionStore: loadSessionStoreMock as TelegramBotDeps["loadSessionStore"],
   resolveStorePath: resolveStorePathMock,
-  readChannelAllowFromStore,
-  enqueueSystemEvent: enqueueSystemEventSpy,
+  readChannelAllowFromStore:
+    readChannelAllowFromStore as TelegramBotDeps["readChannelAllowFromStore"],
+  upsertChannelPairingRequest:
+    upsertChannelPairingRequest as TelegramBotDeps["upsertChannelPairingRequest"],
+  enqueueSystemEvent: enqueueSystemEventSpy as TelegramBotDeps["enqueueSystemEvent"],
   dispatchReplyWithBufferedBlockDispatcher,
-  listSkillCommandsForAgents,
-  wasSentByBot,
+  loadWebMedia: loadWebMedia as TelegramBotDeps["loadWebMedia"],
+  buildModelsProviderData: buildModelsProviderData as TelegramBotDeps["buildModelsProviderData"],
+  listSkillCommandsForAgents:
+    listSkillCommandsForAgents as TelegramBotDeps["listSkillCommandsForAgents"],
+  syncTelegramMenuCommands: syncTelegramMenuCommands as TelegramBotDeps["syncTelegramMenuCommands"],
+  wasSentByBot: wasSentByBot as TelegramBotDeps["wasSentByBot"],
+  resolveExecApproval: resolveExecApprovalSpy as NonNullable<
+    TelegramBotDeps["resolveExecApproval"]
+  >,
 };
 
 vi.doMock("./bot.runtime.js", () => telegramBotRuntimeForTest);
@@ -344,6 +455,9 @@ beforeEach(() => {
   resetInboundDedupe();
   loadConfig.mockReset();
   loadConfig.mockReturnValue(DEFAULT_TELEGRAM_TEST_CONFIG);
+  sessionStoreEntries.value = {};
+  loadSessionStoreMock.mockReset();
+  loadSessionStoreMock.mockImplementation(() => sessionStoreEntries.value);
   resolveStorePathMock.mockReset();
   resolveStorePathMock.mockImplementation((storePath?: string) => storePath ?? sessionStorePath);
   loadWebMedia.mockReset();
@@ -356,26 +470,23 @@ beforeEach(() => {
   stopSpy.mockReset();
   useSpy.mockReset();
   replySpy.mockReset();
-  replySpy.mockImplementation(async (_ctx, opts) => {
+  replySpy.mockImplementation(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
     await opts?.onReplyStart?.();
     return undefined;
   });
+  resolveExecApprovalSpy.mockReset();
+  resolveExecApprovalSpy.mockResolvedValue(undefined);
   dispatchReplyWithBufferedBlockDispatcher.mockReset();
   dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
-    async (params: DispatchReplyHarnessParams) => {
-      const result: DispatchReplyWithBufferedBlockDispatcherResult = {
-        queuedFinal: false,
-        counts: {} as DispatchReplyWithBufferedBlockDispatcherResult["counts"],
-      };
-      await params.dispatcherOptions?.typingCallbacks?.start?.();
-      const reply = await replySpy(params.ctx, params.replyOptions);
-      const payloads = reply === undefined ? [] : Array.isArray(reply) ? reply : [reply];
-      for (const payload of payloads) {
-        await params.dispatcherOptions?.deliver?.(payload, { kind: "final" });
-      }
-      return result;
-    },
+    async (params: DispatchReplyHarnessParams) =>
+      await dispatchHarnessReplies(params, async (dispatchParams) => {
+        return await replySpy(dispatchParams.ctx, dispatchParams.replyOptions);
+      }),
   );
+  syncTelegramMenuCommands.mockReset();
+  syncTelegramMenuCommands.mockImplementation(async ({ bot, commandsToRegister }) => {
+    await bot.api.setMyCommands(commandsToRegister);
+  });
 
   sendAnimationSpy.mockReset();
   sendAnimationSpy.mockResolvedValue({ message_id: 78 });
@@ -394,6 +505,8 @@ beforeEach(() => {
   sendChatActionSpy.mockResolvedValue(undefined);
   setMyCommandsSpy.mockReset();
   setMyCommandsSpy.mockResolvedValue(undefined);
+  getChatSpy.mockReset();
+  getChatSpy.mockResolvedValue(undefined);
   getMeSpy.mockReset();
   getMeSpy.mockResolvedValue({
     username: "openclaw_bot",
@@ -410,6 +523,10 @@ beforeEach(() => {
   wasSentByBot.mockReturnValue(false);
   listSkillCommandsForAgents.mockReset();
   listSkillCommandsForAgents.mockReturnValue([]);
+  buildModelsProviderData.mockReset();
+  buildModelsProviderData.mockImplementation(async (cfg: OpenClawConfig) => {
+    return createModelsProviderDataFromConfig(cfg);
+  });
   middlewareUseSpy.mockReset();
   runnerHoisted.sequentializeMiddleware.mockReset();
   runnerHoisted.sequentializeMiddleware.mockImplementation(async (_ctx, next) => {

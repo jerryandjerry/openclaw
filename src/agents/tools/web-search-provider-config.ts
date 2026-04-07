@@ -1,5 +1,5 @@
 import type { OpenClawConfig } from "../../config/config.js";
-import { resolvePluginWebSearchConfig } from "../../config/legacy-web-search.js";
+import { resolvePluginWebSearchConfig } from "../../config/plugin-web-search-config.js";
 
 type ConfiguredWebSearchProvider = NonNullable<
   NonNullable<NonNullable<OpenClawConfig["tools"]>["web"]>["search"]
@@ -69,6 +69,37 @@ export function setScopedCredentialValue(
     return;
   }
   (scoped as Record<string, unknown>).apiKey = value;
+}
+
+export function mergeScopedSearchConfig(
+  searchConfig: Record<string, unknown> | undefined,
+  key: string,
+  pluginConfig: Record<string, unknown> | undefined,
+  options?: { mirrorApiKeyToTopLevel?: boolean },
+): Record<string, unknown> | undefined {
+  if (!pluginConfig) {
+    return searchConfig;
+  }
+
+  const currentScoped =
+    searchConfig?.[key] &&
+    typeof searchConfig[key] === "object" &&
+    !Array.isArray(searchConfig[key])
+      ? (searchConfig[key] as Record<string, unknown>)
+      : {};
+  const next: Record<string, unknown> = {
+    ...searchConfig,
+    [key]: {
+      ...currentScoped,
+      ...pluginConfig,
+    },
+  };
+
+  if (options?.mirrorApiKeyToTopLevel && pluginConfig.apiKey !== undefined) {
+    next.apiKey = pluginConfig.apiKey;
+  }
+
+  return next;
 }
 
 export function resolveSearchConfig(cfg?: OpenClawConfig): WebSearchConfig {

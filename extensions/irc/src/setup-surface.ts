@@ -1,15 +1,17 @@
-import type { DmPolicy } from "openclaw/plugin-sdk/config-runtime";
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/routing";
+import type {
+  ChannelSetupDmPolicy,
+  ChannelSetupWizard,
+  WizardPrompter,
+} from "openclaw/plugin-sdk/setup";
 import {
   createAllowFromSection,
-  promptParsedAllowFromForAccount,
+  createPromptParsedAllowFromForAccount,
+  createStandardChannelSetupStatus,
+  formatDocsLink,
   setSetupChannelEnabled,
 } from "openclaw/plugin-sdk/setup";
-import type { ChannelSetupDmPolicy } from "openclaw/plugin-sdk/setup";
-import type { ChannelSetupWizard } from "openclaw/plugin-sdk/setup";
-import { formatDocsLink } from "openclaw/plugin-sdk/setup";
-import type { WizardPrompter } from "openclaw/plugin-sdk/setup";
-import { listIrcAccountIds, resolveDefaultIrcAccountId, resolveIrcAccount } from "./accounts.js";
+import { resolveDefaultIrcAccountId, resolveIrcAccount } from "./accounts.js";
 import {
   isChannelTarget,
   normalizeIrcAllowEntry,
@@ -24,7 +26,7 @@ import {
   setIrcNickServ,
   updateIrcAccountConfig,
 } from "./setup-core.js";
-import type { CoreConfig, IrcAccountConfig, IrcNickServConfig } from "./types.js";
+import type { CoreConfig } from "./types.js";
 
 const channel = "irc" as const;
 const USE_ENV_FLAG = "__ircUseEnv";
@@ -52,36 +54,27 @@ function normalizeGroupEntry(raw: string): string | null {
   return `#${normalized.replace(/^#+/, "")}`;
 }
 
-async function promptIrcAllowFrom(params: {
-  cfg: CoreConfig;
-  prompter: WizardPrompter;
-  accountId?: string;
-}): Promise<CoreConfig> {
-  return await promptParsedAllowFromForAccount({
-    cfg: params.cfg,
-    accountId: params.accountId,
-    defaultAccountId: resolveDefaultIrcAccountId(params.cfg),
-    prompter: params.prompter,
-    noteTitle: "IRC allowlist",
-    noteLines: [
-      "Allowlist IRC DMs by sender.",
-      "Examples:",
-      "- alice",
-      "- alice!ident@example.org",
-      "Multiple entries: comma-separated.",
-    ],
-    message: "IRC allowFrom (nick or nick!user@host)",
-    placeholder: "alice, bob!ident@example.org",
-    parseEntries: (raw) => ({
-      entries: parseListInput(raw)
-        .map((entry) => normalizeIrcAllowEntry(entry))
-        .map((entry) => entry.trim())
-        .filter(Boolean),
-    }),
-    getExistingAllowFrom: ({ cfg }) => cfg.channels?.irc?.allowFrom ?? [],
-    applyAllowFrom: ({ cfg, allowFrom }) => setIrcAllowFrom(cfg, allowFrom),
-  });
-}
+const promptIrcAllowFrom = createPromptParsedAllowFromForAccount<CoreConfig>({
+  defaultAccountId: (cfg) => resolveDefaultIrcAccountId(cfg),
+  noteTitle: "IRC allowlist",
+  noteLines: [
+    "Allowlist IRC DMs by sender.",
+    "Examples:",
+    "- alice",
+    "- alice!ident@example.org",
+    "Multiple entries: comma-separated.",
+  ],
+  message: "IRC allowFrom (nick or nick!user@host)",
+  placeholder: "alice, bob!ident@example.org",
+  parseEntries: (raw) => ({
+    entries: parseListInput(raw)
+      .map((entry) => normalizeIrcAllowEntry(entry))
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  }),
+  getExistingAllowFrom: ({ cfg }) => cfg.channels?.irc?.allowFrom ?? [],
+  applyAllowFrom: ({ cfg, allowFrom }) => setIrcAllowFrom(cfg, allowFrom),
+});
 
 async function promptIrcNickServConfig(params: {
   cfg: CoreConfig;
@@ -177,21 +170,18 @@ const ircDmPolicy: ChannelSetupDmPolicy = {
 
 export const ircSetupWizard: ChannelSetupWizard = {
   channel,
-  status: {
+  status: createStandardChannelSetupStatus({
+    channelLabel: "IRC",
     configuredLabel: "configured",
     unconfiguredLabel: "needs host + nick",
     configuredHint: "configured",
     unconfiguredHint: "needs host + nick",
     configuredScore: 1,
     unconfiguredScore: 0,
-    resolveConfigured: ({ cfg }) =>
-      listIrcAccountIds(cfg as CoreConfig).some(
-        (accountId) => resolveIrcAccount({ cfg: cfg as CoreConfig, accountId }).configured,
-      ),
-    resolveStatusLines: ({ configured }) => [
-      `IRC: ${configured ? "configured" : "needs host + nick"}`,
-    ],
-  },
+    includeStatusLine: true,
+    resolveConfigured: ({ cfg, accountId }) =>
+      resolveIrcAccount({ cfg: cfg as CoreConfig, accountId }).configured,
+  }),
   introNote: {
     title: "IRC setup",
     lines: [
@@ -269,7 +259,7 @@ export const ircSetupWizard: ChannelSetupWizard = {
       shouldPrompt: ({ credentialValues }) => credentialValues[USE_ENV_FLAG] !== "1",
       initialValue: ({ cfg, accountId, credentialValues }) => {
         const resolved = resolveIrcAccount({ cfg: cfg as CoreConfig, accountId });
-        const tls = credentialValues[TLS_FLAG] === "0" ? false : true;
+        const tls = credentialValues[TLS_FLAG] !== "0";
         const defaultPort = resolved.config.port ?? (tls ? 6697 : 6667);
         return String(defaultPort);
       },

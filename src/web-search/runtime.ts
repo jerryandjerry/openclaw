@@ -1,16 +1,21 @@
 import type { OpenClawConfig } from "../config/config.js";
-import { normalizeResolvedSecretInputString } from "../config/types.secrets.js";
 import { logVerbose } from "../globals.js";
 import type {
   PluginWebSearchProviderEntry,
   WebSearchProviderToolDefinition,
 } from "../plugins/types.js";
-import {
-  resolvePluginWebSearchProviders,
-  resolveRuntimeWebSearchProviders,
-} from "../plugins/web-search-providers.js";
+import { resolvePluginWebSearchProviders } from "../plugins/web-search-providers.runtime.js";
+import { resolveRuntimeWebSearchProviders } from "../plugins/web-search-providers.runtime.js";
+import { sortWebSearchProvidersForAutoDetect } from "../plugins/web-search-providers.shared.js";
+import { getActiveRuntimeWebToolsMetadata } from "../secrets/runtime-web-tools-state.js";
 import type { RuntimeWebSearchMetadata } from "../secrets/runtime-web-tools.types.js";
-import { normalizeSecretInput } from "../utils/normalize-secret-input.js";
+import {
+  hasWebProviderEntryCredential,
+  providerRequiresCredential,
+  readWebProviderEnvValue,
+  resolveWebProviderConfig,
+  resolveWebProviderDefinition,
+} from "../web/provider-runtime-shared.js";
 
 type WebSearchConfig = NonNullable<OpenClawConfig["tools"]>["web"] extends infer Web
   ? Web extends { search?: infer Search }
@@ -31,11 +36,7 @@ export type RunWebSearchParams = ResolveWebSearchDefinitionParams & {
 };
 
 function resolveSearchConfig(cfg?: OpenClawConfig): WebSearchConfig {
-  const search = cfg?.tools?.web?.search;
-  if (!search || typeof search !== "object") {
-    return undefined;
-  }
-  return search as WebSearchConfig;
+  return resolveWebProviderConfig<"search", NonNullable<WebSearchConfig>>(cfg, "search");
 }
 
 export function resolveWebSearchEnabled(params: {
@@ -51,39 +52,30 @@ export function resolveWebSearchEnabled(params: {
   return true;
 }
 
-function readProviderEnvValue(envVars: string[]): string | undefined {
-  for (const envVar of envVars) {
-    const value = normalizeSecretInput(process.env[envVar]);
-    if (value) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function hasProviderCredential(
-  providerId: string,
+function hasEntryCredential(
+  provider: Pick<
+    PluginWebSearchProviderEntry,
+    | "credentialPath"
+    | "id"
+    | "envVars"
+    | "getConfiguredCredentialValue"
+    | "getCredentialValue"
+    | "requiresCredential"
+  >,
   config: OpenClawConfig | undefined,
   search: WebSearchConfig | undefined,
 ): boolean {
-  const providers = resolvePluginWebSearchProviders({
+  return hasWebProviderEntryCredential({
+    provider,
     config,
-    bundledAllowlistCompat: true,
+    toolConfig: search as Record<string, unknown> | undefined,
+    resolveRawValue: ({ provider: currentProvider, config: currentConfig, toolConfig }) =>
+      currentProvider.getConfiguredCredentialValue?.(currentConfig) ??
+      (currentProvider.id === "brave" ? currentProvider.getCredentialValue(toolConfig) : undefined),
+    resolveEnvValue: ({ provider: currentProvider, configuredEnvVarId }) =>
+      (configuredEnvVarId ? readWebProviderEnvValue([configuredEnvVarId]) : undefined) ??
+      readWebProviderEnvValue(currentProvider.envVars),
   });
-  const provider = providers.find((entry) => entry.id === providerId);
-  if (!provider) {
-    return false;
-  }
-  const rawValue =
-    provider.getConfiguredCredentialValue?.(config) ??
-    provider.getCredentialValue(search as Record<string, unknown> | undefined);
-  const fromConfig = normalizeSecretInput(
-    normalizeResolvedSecretInputString({
-      value: rawValue,
-      path: provider.credentialPath,
-    }),
-  );
-  return Boolean(fromConfig || readProviderEnvValue(provider.envVars));
 }
 
 export function listWebSearchProviders(params?: {
@@ -95,17 +87,28 @@ export function listWebSearchProviders(params?: {
   });
 }
 
+export function listConfiguredWebSearchProviders(params?: {
+  config?: OpenClawConfig;
+}): PluginWebSearchProviderEntry[] {
+  return resolvePluginWebSearchProviders({
+    config: params?.config,
+    bundledAllowlistCompat: true,
+  });
+}
+
 export function resolveWebSearchProviderId(params: {
   search?: WebSearchConfig;
   config?: OpenClawConfig;
   providers?: PluginWebSearchProviderEntry[];
 }): string {
-  const providers =
+  const providers = sortWebSearchProvidersForAutoDetect(
     params.providers ??
-    resolvePluginWebSearchProviders({
-      config: params.config,
-      bundledAllowlistCompat: true,
-    });
+      resolvePluginWebSearchProviders({
+        config: params.config,
+        bundledAllowlistCompat: true,
+        origin: "bundled",
+      }),
+  );
   const raw =
     params.search && "provider" in params.search && typeof params.search.provider === "string"
       ? params.search.provider.trim().toLowerCase()
@@ -119,14 +122,25 @@ export function resolveWebSearchProviderId(params: {
   }
 
   if (!raw) {
+    let keylessFallbackProviderId = "";
     for (const provider of providers) {
-      if (!hasProviderCredential(provider.id, params.config, params.search)) {
+      if (!providerRequiresCredential(provider)) {
+        keylessFallbackProviderId ||= provider.id;
+        continue;
+      }
+      if (!hasEntryCredential(provider, params.config, params.search)) {
         continue;
       }
       logVerbose(
         `web_search: no provider configured, auto-detected "${provider.id}" from available API keys`,
       );
       return provider.id;
+    }
+    if (keylessFallbackProviderId) {
+      logVerbose(
+        `web_search: no provider configured and no credentials found, falling back to keyless provider "${keylessFallbackProviderId}"`,
+      );
+      return keylessFallbackProviderId;
     }
   }
 
@@ -137,11 +151,8 @@ export function resolveWebSearchDefinition(
   options?: ResolveWebSearchDefinitionParams,
 ): { provider: PluginWebSearchProviderEntry; definition: WebSearchProviderToolDefinition } | null {
   const search = resolveSearchConfig(options?.config);
-  if (!resolveWebSearchEnabled({ search, sandboxed: options?.sandboxed })) {
-    return null;
-  }
-
-  const providers = (
+  const runtimeWebSearch = options?.runtimeWebSearch ?? getActiveRuntimeWebToolsMetadata()?.search;
+  const providers = sortWebSearchProvidersForAutoDetect(
     options?.preferRuntimeProviders
       ? resolveRuntimeWebSearchProviders({
           config: options?.config,
@@ -150,38 +161,40 @@ export function resolveWebSearchDefinition(
       : resolvePluginWebSearchProviders({
           config: options?.config,
           bundledAllowlistCompat: true,
-        })
-  ).filter(Boolean);
-  if (providers.length === 0) {
-    return null;
-  }
-
-  const providerId =
-    options?.providerId ??
-    options?.runtimeWebSearch?.selectedProvider ??
-    options?.runtimeWebSearch?.providerConfigured ??
-    resolveWebSearchProviderId({ config: options?.config, search, providers });
-  const provider =
-    providers.find((entry) => entry.id === providerId) ??
-    providers.find(
-      (entry) =>
-        entry.id === resolveWebSearchProviderId({ config: options?.config, search, providers }),
-    ) ??
-    providers[0];
-  if (!provider) {
-    return null;
-  }
-
-  const definition = provider.createTool({
+          origin: "bundled",
+        }),
+  );
+  return resolveWebProviderDefinition({
     config: options?.config,
-    searchConfig: search as Record<string, unknown> | undefined,
-    runtimeMetadata: options?.runtimeWebSearch,
+    toolConfig: search as Record<string, unknown> | undefined,
+    runtimeMetadata: runtimeWebSearch,
+    sandboxed: options?.sandboxed,
+    providerId: options?.providerId,
+    providers,
+    resolveEnabled: ({ toolConfig, sandboxed }) =>
+      resolveWebSearchEnabled({
+        search: toolConfig as WebSearchConfig | undefined,
+        sandboxed,
+      }),
+    resolveAutoProviderId: ({ config, toolConfig, providers }) =>
+      resolveWebSearchProviderId({
+        config,
+        search: toolConfig as WebSearchConfig | undefined,
+        providers,
+      }),
+    resolveFallbackProviderId: ({ config, toolConfig, providers }) =>
+      resolveWebSearchProviderId({
+        config,
+        search: toolConfig as WebSearchConfig | undefined,
+        providers,
+      }) || providers[0]?.id,
+    createTool: ({ provider, config, toolConfig, runtimeMetadata }) =>
+      provider.createTool({
+        config,
+        searchConfig: toolConfig,
+        runtimeMetadata,
+      }),
   });
-  if (!definition) {
-    return null;
-  }
-
-  return { provider, definition };
 }
 
 export async function runWebSearch(
@@ -199,5 +212,6 @@ export async function runWebSearch(
 
 export const __testing = {
   resolveSearchConfig,
+  resolveSearchProvider: resolveWebSearchProviderId,
   resolveWebSearchProviderId,
 };

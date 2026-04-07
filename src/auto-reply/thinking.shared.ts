@@ -12,25 +12,20 @@ export type ThinkingCatalogEntry = {
 };
 
 const BASE_THINKING_LEVELS: ThinkLevel[] = ["off", "minimal", "low", "medium", "high", "adaptive"];
-const ANTHROPIC_CLAUDE_46_MODEL_RE = /^claude-(?:opus|sonnet)-4(?:\.|-)6(?:$|[-.])/i;
-const AMAZON_BEDROCK_CLAUDE_46_MODEL_RE = /claude-(?:opus|sonnet)-4(?:\.|-)6(?:$|[-.])/i;
-
-export function normalizeProviderId(provider?: string | null): string {
-  if (!provider) {
-    return "";
-  }
-  const normalized = provider.trim().toLowerCase();
-  if (normalized === "z.ai" || normalized === "z-ai") {
-    return "zai";
-  }
-  if (normalized === "bedrock" || normalized === "aws-bedrock") {
-    return "amazon-bedrock";
-  }
-  return normalized;
-}
+const NO_THINKING_LEVELS: ThinkLevel[] = [...BASE_THINKING_LEVELS];
 
 export function isBinaryThinkingProvider(provider?: string | null): boolean {
-  return normalizeProviderId(provider) === "zai";
+  void provider;
+  return false;
+}
+
+export function supportsBuiltInXHighThinking(
+  provider?: string | null,
+  model?: string | null,
+): boolean {
+  void provider;
+  void model;
+  return false;
 }
 
 // Normalize user-provided thinking level strings to the canonical enum.
@@ -76,7 +71,7 @@ export function listThinkingLevels(
   _provider?: string | null,
   _model?: string | null,
 ): ThinkLevel[] {
-  return [...BASE_THINKING_LEVELS];
+  return [...NO_THINKING_LEVELS];
 }
 
 export function listThinkingLevelLabels(provider?: string | null, model?: string | null): string[] {
@@ -103,14 +98,6 @@ export function resolveThinkingDefaultForModel(params: {
   model: string;
   catalog?: ThinkingCatalogEntry[];
 }): ThinkLevel {
-  const normalizedProvider = normalizeProviderId(params.provider);
-  const modelId = params.model.trim();
-  if (normalizedProvider === "anthropic" && ANTHROPIC_CLAUDE_46_MODEL_RE.test(modelId)) {
-    return "adaptive";
-  }
-  if (normalizedProvider === "amazon-bedrock" && AMAZON_BEDROCK_CLAUDE_46_MODEL_RE.test(modelId)) {
-    return "adaptive";
-  }
   const candidate = params.catalog?.find(
     (entry) => entry.provider === params.provider && entry.id === params.model,
   );
