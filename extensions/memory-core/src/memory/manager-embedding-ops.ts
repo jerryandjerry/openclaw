@@ -1,18 +1,18 @@
 import fs from "node:fs/promises";
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   enforceEmbeddingMaxInputTokens,
   hasNonTextEmbeddingParts,
   type EmbeddingInput,
+  type MemoryEmbeddingProviderRuntime,
 } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
-import { type SessionFileEntry } from "openclaw/plugin-sdk/memory-core-host-engine-qmd";
 import {
   buildMultimodalChunkForIndexing,
   chunkMarkdown,
   hashText,
   remapChunkLines,
   type MemoryChunk,
-  type MemoryFileEntry,
   type MemorySource,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
@@ -35,6 +35,7 @@ import {
 } from "./manager-embedding-policy.js";
 import { deleteMemoryFtsRows } from "./manager-fts-state.js";
 import { MemoryManagerSyncOps } from "./manager-sync-ops.js";
+import { logMemoryVectorDegradedWrite } from "./manager-vector-warning.js";
 import { replaceMemoryVectorRow } from "./manager-vector-write.js";
 
 const VECTOR_TABLE = "chunks_vec";
@@ -51,6 +52,64 @@ const EMBEDDING_BATCH_TIMEOUT_REMOTE_MS = 2 * 60_000;
 const EMBEDDING_BATCH_TIMEOUT_LOCAL_MS = 10 * 60_000;
 
 const log = createSubsystemLogger("memory");
+
+type MemoryIndexEntry = {
+  path: string;
+  absPath: string;
+  mtimeMs: number;
+  size: number;
+  hash: string;
+  kind?: "markdown" | "multimodal";
+  contentText?: string;
+  lineMap?: number[];
+};
+
+export function resolveEmbeddingTimeoutMs(params: {
+  kind: "query" | "batch";
+  providerId?: string;
+  providerRuntime?: Pick<
+    MemoryEmbeddingProviderRuntime,
+    "inlineQueryTimeoutMs" | "inlineBatchTimeoutMs"
+  >;
+  configuredBatchTimeoutSeconds?: number;
+}): number {
+  if (params.kind === "query") {
+    const runtimeTimeoutMs = params.providerRuntime?.inlineQueryTimeoutMs;
+    if (typeof runtimeTimeoutMs === "number" && runtimeTimeoutMs > 0) {
+      return runtimeTimeoutMs;
+    }
+    return params.providerId === "local"
+      ? EMBEDDING_QUERY_TIMEOUT_LOCAL_MS
+      : EMBEDDING_QUERY_TIMEOUT_REMOTE_MS;
+  }
+
+  const configuredTimeoutSeconds = params.configuredBatchTimeoutSeconds;
+  if (typeof configuredTimeoutSeconds === "number" && configuredTimeoutSeconds > 0) {
+    return configuredTimeoutSeconds * 1000;
+  }
+  const runtimeTimeoutMs = params.providerRuntime?.inlineBatchTimeoutMs;
+  if (typeof runtimeTimeoutMs === "number" && runtimeTimeoutMs > 0) {
+    return runtimeTimeoutMs;
+  }
+  return params.providerId === "local"
+    ? EMBEDDING_BATCH_TIMEOUT_LOCAL_MS
+    : EMBEDDING_BATCH_TIMEOUT_REMOTE_MS;
+}
+
+export function resolveMemoryIndexConcurrency(params: {
+  batch: { enabled: boolean; concurrency: number };
+  configuredNonBatchConcurrency?: number;
+  providerId?: string;
+}): number {
+  if (params.batch.enabled) {
+    return params.batch.concurrency;
+  }
+  const configured = params.configuredNonBatchConcurrency;
+  if (typeof configured === "number" && Number.isFinite(configured)) {
+    return Math.max(1, Math.floor(configured));
+  }
+  return params.providerId === "ollama" ? 1 : EMBEDDING_INDEX_CONCURRENCY;
+}
 
 export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
   protected abstract batchFailureCount: number;
@@ -157,7 +216,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
 
   private async embedChunksWithBatch(
     chunks: MemoryChunk[],
-    _entry: MemoryFileEntry | SessionFileEntry,
+    _entry: MemoryIndexEntry,
     source: MemorySource,
   ): Promise<number[][]> {
     const provider = this.provider;
@@ -303,11 +362,12 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
   }
 
   private resolveEmbeddingTimeout(kind: "query" | "batch"): number {
-    const isLocal = this.provider?.id === "local";
-    if (kind === "query") {
-      return isLocal ? EMBEDDING_QUERY_TIMEOUT_LOCAL_MS : EMBEDDING_QUERY_TIMEOUT_REMOTE_MS;
-    }
-    return isLocal ? EMBEDDING_BATCH_TIMEOUT_LOCAL_MS : EMBEDDING_BATCH_TIMEOUT_REMOTE_MS;
+    return resolveEmbeddingTimeoutMs({
+      kind,
+      providerId: this.provider?.id,
+      providerRuntime: this.providerRuntime,
+      configuredBatchTimeoutSeconds: this.settings.sync.embeddingBatchTimeoutSeconds,
+    });
   }
 
   protected async embedQueryWithTimeout(text: string): Promise<number[]> {
@@ -414,7 +474,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     try {
       return await params.run();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatErrorMessage(err);
       if (this.isBatchTimeoutError(message)) {
         log.warn(`memory embeddings: ${params.provider} batch timed out; retrying once`);
         try {
@@ -444,7 +504,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       await this.resetBatchFailureCount();
       return result;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatErrorMessage(err);
       const attempts = (err as { batchAttempts?: number }).batchAttempts ?? 1;
       const forceDisable = /asyncBatchEmbedContent not available/i.test(message);
       const failure = await this.recordBatchFailure({
@@ -462,7 +522,11 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
   }
 
   protected getIndexConcurrency(): number {
-    return this.batch.enabled ? this.batch.concurrency : EMBEDDING_INDEX_CONCURRENCY;
+    return resolveMemoryIndexConcurrency({
+      batch: this.batch,
+      configuredNonBatchConcurrency: this.settings.remote?.nonBatchConcurrency,
+      providerId: this.provider?.id,
+    });
   }
 
   private clearIndexedFileData(pathname: string, source: MemorySource): void {
@@ -489,7 +553,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     this.db.prepare(`DELETE FROM chunks WHERE path = ? AND source = ?`).run(pathname, source);
   }
 
-  private upsertFileRecord(entry: MemoryFileEntry | SessionFileEntry, source: MemorySource): void {
+  private upsertFileRecord(entry: MemoryIndexEntry, source: MemorySource): void {
     this.db
       .prepare(
         `INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)
@@ -512,7 +576,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
    * Pass an empty embeddings array to skip vector writes (FTS-only mode).
    */
   private writeChunks(
-    entry: MemoryFileEntry | SessionFileEntry,
+    entry: MemoryIndexEntry,
     source: MemorySource,
     model: string,
     chunks: MemoryChunk[],
@@ -567,17 +631,19 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
           .run(chunk.text, id, entry.path, source, model, chunk.startLine, chunk.endLine);
       }
     }
-    if (this.vector.enabled && !vectorReady && chunks.length > 0) {
-      const errDetail = this.vector.loadError ? `: ${this.vector.loadError}` : "";
-      log.warn(
-        `chunks written for ${entry.path} without vector embeddings — chunks_vec not updated (sqlite-vec unavailable${errDetail}). Vector recall degraded for this file.`,
-      );
-    }
+    this.vectorDegradedWriteWarningShown = logMemoryVectorDegradedWrite({
+      vectorEnabled: this.vector.enabled,
+      vectorReady,
+      chunkCount: chunks.length,
+      warningShown: this.vectorDegradedWriteWarningShown,
+      loadError: this.vector.loadError,
+      warn: (message) => log.warn(message),
+    });
     this.upsertFileRecord(entry, source);
   }
 
   protected async indexFile(
-    entry: MemoryFileEntry | SessionFileEntry,
+    entry: MemoryIndexEntry,
     options: { source: MemorySource; content?: string },
   ) {
     // FTS-only mode: no embedding provider, but we can still build a FTS index
@@ -636,7 +702,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
         ? await this.embedChunksWithBatch(chunks, entry, options.source)
         : await this.embedChunksInBatches(chunks);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatErrorMessage(err);
       if (
         "kind" in entry &&
         entry.kind === "multimodal" &&
