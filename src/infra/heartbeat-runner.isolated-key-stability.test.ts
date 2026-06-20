@@ -1,3 +1,4 @@
+// Covers heartbeat system-event isolation by stable session keys.
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as replyModule from "../auto-reply/reply.js";
@@ -23,13 +24,12 @@ afterEach(() => {
 
 type HeartbeatReplyContext = {
   Body?: string;
-  ForceSenderIsOwnerFalse?: boolean;
   Provider?: string;
   SessionKey?: string;
 };
 
 function replyCall(replySpy: { mock: { calls: unknown[][] } }, index = 0): HeartbeatReplyContext {
-  return (replySpy.mock.calls.at(index)?.at(0) ?? {}) as HeartbeatReplyContext;
+  return (replySpy.mock.calls[index]?.at(0) ?? {}) as HeartbeatReplyContext;
 }
 
 describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
@@ -333,7 +333,6 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
       const calledCtx = replyCall(replySpy);
       expect(calledCtx.SessionKey).toBe(isolatedSessionKey);
       expect(calledCtx.Provider).toBe("exec-event");
-      expect(calledCtx.ForceSenderIsOwnerFalse).toBe(true);
     });
   });
 

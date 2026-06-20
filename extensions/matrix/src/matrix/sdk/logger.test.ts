@@ -1,3 +1,4 @@
+// Matrix tests cover logger plugin behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConsoleLogger, setMatrixConsoleLogging } from "./logger.js";
 
@@ -16,10 +17,9 @@ describe("ConsoleLogger", () => {
       "Authorization: Bearer 123456:abcdefghijklmnopqrstuvwxyzABCDEFG",
     );
 
-    const message = spy.mock.calls.at(0)?.[0];
-    expect(typeof message).toBe("string");
-    expect(message).toContain("Authorization: Bearer");
-    expect(message).not.toContain("123456:abcdefghijklmnopqrstuvwxyzABCDEFG");
-    expect(message).toContain("***");
+    const message = spy.mock.calls[0]?.[0];
+    expect(message).toBe(
+      "[MatrixHttpClient] Authorization: Bearer ***:abcdefghijklmnopqrstuvwxyzABCDEFG",
+    );
   });
 });

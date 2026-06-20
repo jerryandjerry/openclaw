@@ -1,3 +1,4 @@
+// Message hook tests cover message hook dispatch and failure handling.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearInternalHooks,
@@ -107,7 +108,7 @@ const actionCases: ActionCase[] = [
 ];
 
 function requireHookEvent(handler: ReturnType<typeof vi.fn>): InternalHookEvent {
-  const call = handler.mock.calls.at(0);
+  const call = handler.mock.calls[0];
   if (!call) {
     throw new Error("expected hook handler call");
   }

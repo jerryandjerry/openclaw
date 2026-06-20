@@ -1,3 +1,4 @@
+// Tests session usage command output and token accounting summaries.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type {
@@ -106,11 +107,11 @@ function buildCostTotals(overrides: Partial<CostUsageTotals> = {}): CostUsageTot
 
 function expectSessionCostArgs(): Record<string, unknown> {
   expect(loadSessionCostSummaryMock).toHaveBeenCalledTimes(1);
-  const call = loadSessionCostSummaryMock.mock.calls.at(0);
+  const call = loadSessionCostSummaryMock.mock.calls[0] as unknown[] | undefined;
   if (!call) {
     throw new Error("expected loadSessionCostSummary call");
   }
-  const args = call.at(0);
+  const args = call[0];
   if (!args || typeof args !== "object") {
     throw new Error("expected loadSessionCostSummary args");
   }
@@ -119,11 +120,11 @@ function expectSessionCostArgs(): Record<string, unknown> {
 
 function expectFastModeArgs(): Record<string, unknown> {
   expect(resolveFastModeStateMock).toHaveBeenCalledTimes(1);
-  const call = resolveFastModeStateMock.mock.calls.at(0);
+  const call = resolveFastModeStateMock.mock.calls[0] as unknown[] | undefined;
   if (!call) {
     throw new Error("expected resolveFastModeState call");
   }
-  const args = call.at(0);
+  const args = call[0];
   if (!args || typeof args !== "object") {
     throw new Error("expected resolveFastModeState args");
   }

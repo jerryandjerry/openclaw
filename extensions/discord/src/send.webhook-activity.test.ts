@@ -1,3 +1,4 @@
+// Discord tests cover send.webhook activity plugin behavior.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const recordChannelActivityMock = vi.hoisted(() => vi.fn());
@@ -29,7 +30,7 @@ let sendWebhookMessageDiscord: typeof import("./send.webhook.js").sendWebhookMes
 type MockWithCalls = { mock: { calls: unknown[][] } };
 
 function firstMockCall(mock: MockWithCalls, label: string): unknown[] {
-  const call = mock.mock.calls.at(0);
+  const call = mock.mock.calls[0];
   if (!call) {
     throw new Error(`expected ${label} call`);
   }

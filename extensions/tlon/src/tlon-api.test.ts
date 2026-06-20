@@ -1,3 +1,4 @@
+// Tlon tests cover tlon api plugin behavior.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authenticate } from "./urbit/auth.js";
 import { scryUrbitPath } from "./urbit/channel-ops.js";
@@ -63,7 +64,7 @@ function createGuardedResult(response: Response, finalUrl: string) {
 }
 
 function guardedFetchCall(index: number): Parameters<typeof fetchWithSsrFGuard>[0] {
-  const call = mockGuardedFetch.mock.calls.at(index)?.at(0);
+  const call = mockGuardedFetch.mock.calls[index]?.at(0);
   if (call === undefined) {
     throw new Error(`expected guarded fetch call ${index}`);
   }

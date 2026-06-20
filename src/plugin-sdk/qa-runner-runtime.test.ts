@@ -1,3 +1,6 @@
+/**
+ * Tests QA runner runtime facade helpers.
+ */
 import path from "node:path";
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,11 +30,30 @@ vi.mock("./facade-runtime.js", () => ({
   tryLoadActivatedBundledPluginPublicSurfaceModuleSync,
 }));
 
+type ManifestRegistryCall = { env?: NodeJS.ProcessEnv };
+type PublicSurfaceCall = {
+  artifactBasename?: string;
+  dirName?: string;
+  env?: NodeJS.ProcessEnv;
+};
+
+function firstManifestRegistryCall(): ManifestRegistryCall | undefined {
+  return loadPluginManifestRegistry.mock.calls[0]?.[0] as ManifestRegistryCall | undefined;
+}
+
+function firstPublicSurfaceCall(): PublicSurfaceCall | undefined {
+  return loadBundledPluginPublicSurfaceModuleSync.mock.calls[0]?.[0] as
+    | PublicSurfaceCall
+    | undefined;
+}
+
 describe("plugin-sdk qa-runner-runtime", () => {
   const tempDirs: string[] = [];
   const originalPrivateQaCli = process.env.OPENCLAW_ENABLE_PRIVATE_QA_CLI;
+  const originalBundledPluginsDir = process.env.OPENCLAW_BUNDLED_PLUGINS_DIR;
 
   beforeEach(() => {
+    vi.resetModules();
     loadPluginManifestRegistry.mockReset().mockReturnValue({
       plugins: [],
       diagnostics: [],
@@ -40,11 +62,17 @@ describe("plugin-sdk qa-runner-runtime", () => {
     tryLoadActivatedBundledPluginPublicSurfaceModuleSync.mockReset();
     resolveOpenClawPackageRootSync.mockReset().mockReturnValue(null);
     delete process.env.OPENCLAW_ENABLE_PRIVATE_QA_CLI;
+    delete process.env.OPENCLAW_BUNDLED_PLUGINS_DIR;
   });
 
   afterEach(() => {
     cleanupTempDirs(tempDirs);
     restorePrivateQaCliEnv(originalPrivateQaCli);
+    if (originalBundledPluginsDir === undefined) {
+      delete process.env.OPENCLAW_BUNDLED_PLUGINS_DIR;
+    } else {
+      process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = originalBundledPluginsDir;
+    }
   });
 
   it("stays cold until runner discovery is requested", async () => {
@@ -81,9 +109,7 @@ describe("plugin-sdk qa-runner-runtime", () => {
     const module = await import("./qa-runner-runtime.js");
 
     expect(module.loadQaRunnerBundledPluginTestApi("matrix")).toBe(testApi);
-    const testApiCall = loadBundledPluginPublicSurfaceModuleSync.mock.calls.at(0)?.[0] as
-      | { artifactBasename?: string; dirName?: string; env?: NodeJS.ProcessEnv }
-      | undefined;
+    const testApiCall = firstPublicSurfaceCall();
     expect(testApiCall?.dirName).toBe("matrix");
     expect(testApiCall?.artifactBasename).toBe("test-api.js");
     expect(testApiCall?.env?.OPENCLAW_ENABLE_PRIVATE_QA_CLI).toBe("1");
@@ -202,17 +228,13 @@ describe("plugin-sdk qa-runner-runtime", () => {
         },
       },
     ]);
-    const manifestCall = loadPluginManifestRegistry.mock.calls.at(0)?.[0] as
-      | { env?: NodeJS.ProcessEnv }
-      | undefined;
+    const manifestCall = firstManifestRegistryCall();
     expect(manifestCall?.env?.OPENCLAW_ENABLE_PRIVATE_QA_CLI).toBe("1");
     expect(manifestCall?.env?.OPENCLAW_BUNDLED_PLUGINS_DIR).toBe(
       path.join(sourceRoot, "extensions"),
     );
 
-    const publicSurfaceCall = loadBundledPluginPublicSurfaceModuleSync.mock.calls.at(0)?.[0] as
-      | { dirName?: string; artifactBasename?: string; env?: NodeJS.ProcessEnv }
-      | undefined;
+    const publicSurfaceCall = firstPublicSurfaceCall();
     expect(publicSurfaceCall?.dirName).toBe("qa-matrix");
     expect(publicSurfaceCall?.artifactBasename).toBe("runtime-api.js");
     expect(publicSurfaceCall?.env?.OPENCLAW_ENABLE_PRIVATE_QA_CLI).toBe("1");

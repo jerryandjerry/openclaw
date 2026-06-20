@@ -1,3 +1,4 @@
+// Daemon restart health tests cover health checks after daemon restart operations.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewayService } from "../../daemon/service.js";
 import type { PortListenerKind, PortUsage } from "../../infra/ports.js";
@@ -8,6 +9,7 @@ const classifyPortListener = vi.hoisted(() =>
   vi.fn<(_listener: unknown, _port: number) => PortListenerKind>(() => "gateway"),
 );
 const probeGateway = vi.hoisted(() => vi.fn());
+const createConfigIO = vi.hoisted(() => vi.fn());
 const readBestEffortConfig = vi.hoisted(() => vi.fn(async () => ({})));
 const resolveGatewayProbeAuthSafeWithSecretInputs = vi.hoisted(() =>
   vi.fn<(_opts: unknown) => Promise<{ auth: { token?: string; password?: string } }>>(async () => ({
@@ -26,9 +28,7 @@ vi.mock("../../gateway/probe.js", () => ({
 }));
 
 vi.mock("../../config/io.js", () => ({
-  createConfigIO: () => ({
-    readBestEffortConfig: () => readBestEffortConfig(),
-  }),
+  createConfigIO: (opts: unknown) => createConfigIO(opts),
 }));
 
 vi.mock("../../gateway/probe-auth.js", () => ({
@@ -55,7 +55,7 @@ function makeGatewayService(
 }
 
 function firstCallArg(mock: { mock: { calls: unknown[][] } }): unknown {
-  const call = mock.mock.calls.at(0);
+  const call = mock.mock.calls[0];
   if (!call) {
     throw new Error("Expected first mock call");
   }
@@ -139,6 +139,10 @@ describe("inspectGatewayRestart", () => {
     inspectPortUsage.mockReset();
     readBestEffortConfig.mockReset();
     readBestEffortConfig.mockResolvedValue({});
+    createConfigIO.mockReset();
+    createConfigIO.mockReturnValue({
+      readBestEffortConfig: () => readBestEffortConfig(),
+    });
     resolveGatewayProbeAuthSafeWithSecretInputs.mockReset();
     resolveGatewayProbeAuthSafeWithSecretInputs.mockResolvedValue({ auth: {} });
     inspectPortUsage.mockResolvedValue({
@@ -220,14 +224,14 @@ describe("inspectGatewayRestart", () => {
 
   it("does not treat known non-gateway listeners as stale in fallback mode", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    classifyPortListener.mockReturnValue("ssh");
+    classifyPortListener.mockReturnValue("non_gateway");
 
     const snapshot = await inspectGatewayRestartWithSnapshot({
       runtime: { status: "stopped" },
       portUsage: {
         port: 18789,
         status: "busy",
-        listeners: [{ pid: 22001, command: "nginx.exe" }],
+        listeners: [{ pid: 22001, command: "sshd.exe" }],
         hints: [],
       },
       includeUnknownListenersAsStale: true,
@@ -372,6 +376,69 @@ describe("inspectGatewayRestart", () => {
     expect(snapshot.versionMismatch).toBeUndefined();
   });
 
+  it("waits for the managed service when running service proof is required", async () => {
+    probeGateway.mockResolvedValue({
+      ok: true,
+      close: null,
+      server: { version: "2026.4.24", connId: "new" },
+    });
+    inspectPortUsage.mockResolvedValue({
+      port: 18789,
+      status: "busy",
+      listeners: [{ pid: 8000, commandLine: "openclaw-gateway" }],
+      hints: [],
+    });
+    const readRuntime = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "stopped" })
+      .mockResolvedValue({ status: "running", pid: 8000 });
+
+    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
+    const snapshot = await waitForGatewayHealthyRestart({
+      service: { readRuntime } as unknown as GatewayService,
+      port: 18789,
+      expectedVersion: "2026.4.24",
+      requireRunningService: true,
+      attempts: 3,
+      delayMs: 1,
+    });
+
+    expect(snapshot.healthy).toBe(true);
+    expect(snapshot.runtime.status).toBe("running");
+    expect(snapshot.waitOutcome).toBe("healthy");
+    expect(snapshot.elapsedMs).toBe(1);
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
+  it("times out when running service proof never arrives", async () => {
+    probeGateway.mockResolvedValue({
+      ok: true,
+      close: null,
+      server: { version: "2026.4.24", connId: "stale" },
+    });
+    inspectPortUsage.mockResolvedValue({
+      port: 18789,
+      status: "busy",
+      listeners: [{ pid: 5151, commandLine: "openclaw-gateway" }],
+      hints: [],
+    });
+
+    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
+    const snapshot = await waitForGatewayHealthyRestart({
+      service: makeGatewayService({ status: "stopped" }),
+      port: 18789,
+      expectedVersion: "2026.4.24",
+      requireRunningService: true,
+      attempts: 2,
+      delayMs: 1,
+    });
+
+    expect(snapshot.healthy).toBe(true);
+    expect(snapshot.runtime.status).toBe("stopped");
+    expect(snapshot.waitOutcome).toBe("timeout");
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
   it("accepts matching-version restart liveness when the probe lacks operator scope", async () => {
     probeGateway.mockResolvedValue({
       ok: false,
@@ -442,6 +509,13 @@ describe("inspectGatewayRestart", () => {
     expect(authResolveInput.cfg?.gateway?.auth?.mode).toBe("token");
     expect(authResolveInput.cfg?.gateway?.auth?.token).toBe("probe-token");
     expect(authResolveInput.mode).toBe("local");
+    expect(createConfigIO).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: serviceEnv,
+        pluginValidation: "skip",
+        suppressFutureVersionWarning: true,
+      }),
+    );
     const probeInput = firstCallArg(probeGateway) as {
       auth?: { token?: string; password?: string };
       env?: NodeJS.ProcessEnv;
@@ -637,6 +711,8 @@ describe("inspectGatewayRestart", () => {
   });
 
   it("annotates stopped-free early exits with the actual elapsed time", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+
     const snapshot = await waitForStoppedFreeGatewayRestart();
 
     expect(snapshot.healthy).toBe(false);

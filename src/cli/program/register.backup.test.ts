@@ -1,3 +1,4 @@
+// Register backup tests cover backup command registration and option wiring.
 import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerBackupCommand } from "./register.backup.js";
@@ -43,7 +44,7 @@ describe("registerBackupCommand", () => {
 
   function expectForwardedOptions(command: typeof backupCreateCommand): Record<string, unknown> {
     expect(command).toHaveBeenCalledTimes(1);
-    const call = command.mock.calls.at(0);
+    const call = command.mock.calls[0];
     if (!call) {
       throw new Error("expected backup command call");
     }

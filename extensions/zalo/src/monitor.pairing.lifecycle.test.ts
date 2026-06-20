@@ -1,3 +1,4 @@
+// Zalo tests cover monitor.pairing.lifecycle plugin behavior.
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -51,7 +52,9 @@ describe("Zalo pairing lifecycle", () => {
 
     try {
       await withServer(
-        (req, res) => monitor.route.handler(req, res),
+        (req, res) => {
+          void monitor.route.handler(req, res);
+        },
         async (baseUrl) => {
           const { first, replay } = await postWebhookReplay({
             baseUrl,
@@ -84,7 +87,7 @@ describe("Zalo pairing lifecycle", () => {
         meta: { name: "Unauthorized User" },
       });
       expect(sendMessageMock).toHaveBeenCalledTimes(1);
-      const [sendToken, sendPayload, sendOptions] = sendMessageMock.mock.calls.at(0) as [
+      const [sendToken, sendPayload, sendOptions] = sendMessageMock.mock.calls[0] as [
         string,
         { chat_id?: string; text?: string },
         unknown,
@@ -108,7 +111,9 @@ describe("Zalo pairing lifecycle", () => {
 
     try {
       await withServer(
-        (req, res) => monitor.route.handler(req, res),
+        (req, res) => {
+          void monitor.route.handler(req, res);
+        },
         async (baseUrl) => {
           const { first, replay } = await postWebhookReplay({
             baseUrl,

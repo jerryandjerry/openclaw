@@ -1,3 +1,4 @@
+// Agent delivery tests cover command result delivery to reply payloads and CLI dependencies.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deliverAgentCommandResult } from "../agents/command/delivery.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
@@ -369,7 +370,7 @@ describe("deliverAgentCommandResult", () => {
 
     expect(runtime.log).toHaveBeenCalledTimes(1);
     expect(
-      JSON.parse(String((runtime.log as ReturnType<typeof vi.fn>).mock.calls.at(0)?.[0])),
+      JSON.parse(String((runtime.log as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])),
     ).toEqual({
       payloads: [
         {

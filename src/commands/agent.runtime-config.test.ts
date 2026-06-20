@@ -1,3 +1,4 @@
+// Agent runtime config tests cover agent-specific runtime config resolution from temp homes.
 import path from "node:path";
 import { withTempHome as withTempHomeBase } from "openclaw/plugin-sdk/test-env";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -64,7 +65,7 @@ async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
 }
 
 function requireResolveCommandConfigParams(callIndex = 0): ResolveCommandConfigParams {
-  const call = resolveCommandConfigWithSecretsMock.mock.calls.at(callIndex);
+  const call = resolveCommandConfigWithSecretsMock.mock.calls[callIndex];
   if (!call) {
     throw new Error(`expected command config resolution call ${callIndex}`);
   }
@@ -201,7 +202,9 @@ describe("agentCommand runtime config", () => {
 
       const prepared = await resolveAgentRuntimeConfig(runtime);
 
+      expect(readConfigFileSnapshotForWriteMock).toHaveBeenCalledTimes(1);
       expect(resolveCommandConfigWithSecretsMock).not.toHaveBeenCalled();
+      expect(setRuntimeConfigSnapshotMock).toHaveBeenCalledWith(loadedConfig, loadedConfig);
       expect(prepared.cfg).toBe(loadedConfig);
     });
   });

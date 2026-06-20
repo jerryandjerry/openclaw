@@ -1,3 +1,4 @@
+// Control UI tests cover debug behavior.
 import { render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n/index.ts";
@@ -66,10 +67,32 @@ describe("renderDebug", () => {
       throw new Error("expected debug security audit command");
     }
     const callout = container.querySelector(".callout");
-    expect(callout?.classList.contains("warn")).toBe(true);
+    expect(callout?.className).toBe("callout warn");
     expect(normalizedText(callout)).toBe(
       "安全审计: 1 个警告 · 2 条信息. 运行 openclaw security audit --deep 查看详情。",
     );
     expect(command.textContent).toBe("openclaw security audit --deep");
+  });
+
+  it("does not render Invalid Date for Date-invalid event timestamps", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderDebug(
+        createProps({
+          eventLog: [
+            {
+              ts: 8_640_000_000_000_001,
+              event: "gateway",
+              payload: { ok: true },
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    expect(container.textContent).toContain("gateway");
+    expect(container.textContent).not.toContain("Invalid Date");
   });
 });

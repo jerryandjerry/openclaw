@@ -1,3 +1,4 @@
+// Agent identity tests cover identity file creation, persistence, and command integration.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +23,7 @@ vi.mock("../config/config.js", async () => ({
   replaceConfigFile: configMocks.replaceConfigFile,
 }));
 
-import { agentsSetIdentityCommand } from "./agents.js";
+import { agentsSetIdentityCommand } from "./agents.commands.identity.js";
 
 const runtime = createTestRuntime();
 type ConfigWritePayload = {
@@ -43,7 +44,7 @@ async function writeIdentityFile(workspace: string, lines: string[]) {
 }
 
 function getWrittenMainIdentity() {
-  const [written] = configMocks.writeConfigFile.mock.calls.at(0) ?? [];
+  const [written] = configMocks.writeConfigFile.mock.calls[0] ?? [];
   if (!written) {
     throw new Error("expected written agent config");
   }

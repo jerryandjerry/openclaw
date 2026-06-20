@@ -1,3 +1,4 @@
+// Status JSON runtime tests cover runtime status payload construction and command dependencies.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveStatusJsonOutput } from "./status-json-runtime.ts";
 
@@ -49,7 +50,7 @@ function createScan() {
 }
 
 function requireStatusPayloadInput() {
-  const call = mocks.buildStatusJsonPayload.mock.calls.at(0);
+  const call = mocks.buildStatusJsonPayload.mock.calls[0];
   if (!call) {
     throw new Error("expected status json payload call");
   }

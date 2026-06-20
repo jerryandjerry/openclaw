@@ -1,11 +1,11 @@
+// Slack tests cover send.blocks plugin behavior.
 import { describe, expect, it } from "vitest";
-import { createSlackSendTestClient, installSlackBlockTestMocks } from "./blocks.test-helpers.js";
+import { createSlackSendTestClient } from "./blocks.test-helpers.js";
 import {
   clearSlackThreadParticipationCache,
   hasSlackThreadParticipation,
 } from "./sent-thread-cache.js";
 
-installSlackBlockTestMocks();
 const { sendMessageSlack } = await import("./send.js");
 const SLACK_TEST_CFG = { channels: { slack: { botToken: "xoxb-test" } } };
 const SLACK_TEXT_LIMIT = 8000;
@@ -205,6 +205,7 @@ describe("sendMessageSlack blocks", () => {
   it("posts user-target block messages directly without conversations.open", async () => {
     const client = createSlackSendTestClient();
     client.conversations.open.mockRejectedValueOnce(new Error("missing_scope"));
+    client.chat.postMessage.mockResolvedValueOnce({ ts: "171234.567", channel: "D123" });
 
     const result = await sendMessageSlack("user:U123", "", {
       token: "xoxb-test",
@@ -217,8 +218,9 @@ describe("sendMessageSlack blocks", () => {
     expect(postedMessage(client).channel).toBe("U123");
     expect(postedMessage(client).text).toBe("Shared a Block Kit message");
     expect(result.messageId).toBe("171234.567");
-    expect(result.channelId).toBe("U123");
+    expect(result.channelId).toBe("D123");
     expect(result.receipt.platformMessageIds).toEqual(["171234.567"]);
+    expect(result.receipt.parts[0]?.raw).toMatchObject({ channelId: "D123" });
   });
 
   it("retries Slack postMessage DNS request errors without enabling broad write retries", async () => {

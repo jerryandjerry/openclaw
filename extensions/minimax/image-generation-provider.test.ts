@@ -1,3 +1,4 @@
+// Minimax tests cover image generation provider plugin behavior.
 import * as providerAuth from "openclaw/plugin-sdk/provider-auth-runtime";
 import * as providerHttp from "openclaw/plugin-sdk/provider-http";
 import { installPinnedHostnameTestHooks } from "openclaw/plugin-sdk/test-env";
@@ -49,7 +50,7 @@ describe("minimax image-generation provider", () => {
 
   function expectImageGenerationUrl(fetchMock: ReturnType<typeof vi.fn>, url: string) {
     expect(fetchMock).toHaveBeenCalled();
-    const [actualUrl, init] = fetchMock.mock.calls.at(0) as [string, RequestInit | undefined];
+    const [actualUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
     expect(actualUrl).toBe(url);
     expect(init?.method).toBe("POST");
   }
@@ -83,7 +84,7 @@ describe("minimax image-generation provider", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls.at(0) as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://api.minimax.io/v1/image_generation");
     expect(init.method).toBe("POST");
     expect(init.body).toBe(
@@ -107,6 +108,37 @@ describe("minimax image-generation provider", () => {
       ],
       model: "image-01",
     });
+  });
+
+  it("rejects malformed base64 image payloads", async () => {
+    mockMinimaxApiKey();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: {
+              image_base64: ["not-base64!"],
+            },
+            base_resp: { status_code: 0 },
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      ),
+    );
+
+    const provider = buildMinimaxImageGenerationProvider();
+    await expect(
+      provider.generateImage({
+        provider: "minimax",
+        model: "image-01",
+        prompt: "draw a cat",
+        cfg: {},
+      }),
+    ).rejects.toThrow("MiniMax image generation returned malformed image base64");
   });
 
   it("passes request SSRF policy to the provider HTTP helper", async () => {

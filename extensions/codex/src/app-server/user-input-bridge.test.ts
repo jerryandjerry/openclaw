@@ -1,3 +1,4 @@
+// Codex tests cover user input bridge plugin behavior.
 import type { EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { createCodexUserInputBridge } from "./user-input-bridge.js";
@@ -15,7 +16,7 @@ function expectFirstBlockReplyText(params: EmbeddedRunAttemptParams): string {
   if (onBlockReply === undefined) {
     throw new Error("Expected onBlockReply callback");
   }
-  const payload = vi.mocked(onBlockReply).mock.calls.at(0)?.[0];
+  const payload = vi.mocked(onBlockReply).mock.calls[0]?.[0];
   if (typeof payload?.text !== "string") {
     throw new Error("Expected first block reply text");
   }

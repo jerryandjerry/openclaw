@@ -1,3 +1,4 @@
+// Mattermost tests cover setup plugin behavior.
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createSetupWizardAdapter,
@@ -246,7 +247,7 @@ describe("mattermost setup", () => {
     }
 
     expect(registerHttpRoute).toHaveBeenCalledTimes(1);
-    const [route] = registerHttpRoute.mock.calls.at(0) ?? [];
+    const [route] = registerHttpRoute.mock.calls[0] ?? [];
     expect(route?.path).toBe("/api/channels/mattermost/command");
     expect(route?.auth).toBe("plugin");
     expect(typeof route?.handler).toBe("function");

@@ -1,3 +1,4 @@
+// Message send tests cover outbound channel message dispatch and error handling.
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { OutboundDeliveryError } from "../../infra/outbound/deliver-types.js";
@@ -38,7 +39,8 @@ function requireMockCall(
   callIndex: number,
   label: string,
 ): unknown[] {
-  const call = mock.mock.calls.at(callIndex);
+  const resolvedIndex = callIndex < 0 ? mock.mock.calls.length + callIndex : callIndex;
+  const call = mock.mock.calls[resolvedIndex];
   if (!call) {
     throw new Error(`expected ${label} call ${callIndex}`);
   }

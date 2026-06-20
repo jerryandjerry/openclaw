@@ -1,9 +1,12 @@
+// Control UI tests cover agents behavior.
 import { describe, expect, it, vi } from "vitest";
 import { loadAgents, loadToolsCatalog, loadToolsEffective, saveAgentsConfig } from "./agents.ts";
 import type { AgentsConfigSaveState, AgentsState } from "./agents.ts";
 
-function createState(): { state: AgentsState; request: ReturnType<typeof vi.fn> } {
-  const request = vi.fn();
+type TestRequest = (method: string, payload?: unknown) => Promise<unknown>;
+
+function createState(): { state: AgentsState; request: ReturnType<typeof vi.fn<TestRequest>> } {
+  const request = vi.fn<TestRequest>();
   const state: AgentsState = {
     client: {
       request,
@@ -46,7 +49,7 @@ function createState(): { state: AgentsState; request: ReturnType<typeof vi.fn> 
 
 function createSaveState(): {
   state: AgentsConfigSaveState;
-  request: ReturnType<typeof vi.fn>;
+  request: ReturnType<typeof vi.fn<TestRequest>>;
 } {
   const { state, request } = createState();
   return {
@@ -74,6 +77,7 @@ function createSaveState(): {
       configActiveSection: null,
       configActiveSubsection: null,
       pendingUpdateExpectedVersion: null,
+      pendingUpdateHandoff: false,
       updateStatusBanner: null,
       lastError: null,
     },
@@ -187,7 +191,7 @@ describe("loadToolsCatalog", () => {
     await loadToolsCatalog(state, "main");
 
     expect(state.toolsCatalogResult).toBeNull();
-    expect(state.toolsCatalogError).toContain("gateway unavailable");
+    expect(state.toolsCatalogError).toBe("Error: gateway unavailable");
     expect(state.toolsCatalogLoading).toBe(false);
   });
 
@@ -261,7 +265,7 @@ describe("loadToolsEffective", () => {
 
     expect(state.toolsEffectiveResult).toBeNull();
     expect(state.toolsEffectiveResultKey).toBeNull();
-    expect(state.toolsEffectiveError).toContain("gateway unavailable");
+    expect(state.toolsEffectiveError).toBe("Error: gateway unavailable");
     expect(state.toolsEffectiveLoading).toBe(false);
   });
 

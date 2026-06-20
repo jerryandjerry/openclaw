@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// Tests before-agent-reply hooks in the get-reply pipeline.
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HookRunner } from "../../plugins/hooks.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import {
@@ -47,8 +48,11 @@ function createContinueDirectivesResult() {
 }
 
 describe("getReplyFromConfig before_agent_reply wiring", () => {
-  beforeEach(async () => {
+  beforeAll(async () => {
     await loadGetReplyRuntimeForTest();
+  });
+
+  beforeEach(() => {
     vi.stubEnv("OPENCLAW_ALLOW_SLOW_REPLY_TESTS", "1");
     mocks.resolveReplyDirectives.mockReset();
     mocks.handleInlineActions.mockReset();
@@ -71,6 +75,7 @@ describe("getReplyFromConfig before_agent_reply wiring", () => {
       kind: "continue",
       directives: {},
       abortedLastRun: false,
+      cleanedBody: "hello world",
     });
     mocks.hasHooks.mockImplementation((hookName) => hookName === "before_agent_reply");
   });
@@ -81,7 +86,11 @@ describe("getReplyFromConfig before_agent_reply wiring", () => {
       reply: { text: "plugin reply" },
     });
 
-    const result = await getReplyFromConfig(buildGetReplyGroupCtx(), undefined, {});
+    const result = await getReplyFromConfig(
+      buildGetReplyGroupCtx({ SenderId: "telegram-user-42" }),
+      undefined,
+      {},
+    );
 
     expect(result).toEqual({ text: "plugin reply" });
     expect(mocks.runBeforeAgentReply).toHaveBeenCalledTimes(1);
@@ -94,6 +103,7 @@ describe("getReplyFromConfig before_agent_reply wiring", () => {
           sessionId?: string;
           workspaceDir?: string;
           messageProvider?: string;
+          senderId?: string;
           trigger?: string;
           channelId?: string;
         },
@@ -105,6 +115,7 @@ describe("getReplyFromConfig before_agent_reply wiring", () => {
     expect(hookCtx.sessionId).toBe("session-1");
     expect(hookCtx.workspaceDir).toBe("/tmp/workspace");
     expect(hookCtx.messageProvider).toBe("telegram");
+    expect(hookCtx.senderId).toBe("telegram-user-42");
     expect(hookCtx.trigger).toBe("user");
     expect(hookCtx.channelId).toBe("-100123");
     expect(mocks.handleInlineActions.mock.invocationCallOrder[0]).toBeLessThan(

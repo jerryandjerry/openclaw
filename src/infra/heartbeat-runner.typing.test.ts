@@ -1,3 +1,4 @@
+// Tests heartbeat runner typing indicator behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../config/config.js";
@@ -68,7 +69,7 @@ function expectTypingCall(
   mock: ReturnType<typeof vi.fn>,
   expected: { cfg: OpenClawConfig; to: string },
 ) {
-  const call = mock.mock.calls.at(0);
+  const call = mock.mock.calls[0];
   if (!call) {
     throw new Error("missing typing call");
   }

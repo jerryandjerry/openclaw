@@ -1,11 +1,12 @@
+// Tests plugin command install, listing, and config behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import { handlePluginsCommand } from "./commands-plugins.js";
-import { buildPluginsCommandParams } from "./commands.test-harness.js";
+import { buildPluginsCommandParams, type ConfigSnapshotMock } from "./commands.test-harness.js";
 
 const readConfigFileSnapshotMock = vi.hoisted(() => vi.fn());
 const validateConfigObjectWithPluginsMock = vi.hoisted(() => vi.fn());
-const replaceConfigFileMock = vi.hoisted(() => vi.fn(async () => undefined));
+const replaceConfigFileMock = vi.hoisted(() => vi.fn(async (_params: unknown) => undefined));
 const buildPluginRegistrySnapshotReportMock = vi.hoisted(() => vi.fn());
 const buildPluginDiagnosticsReportMock = vi.hoisted(() => vi.fn());
 const buildPluginInspectReportMock = vi.hoisted(() => vi.fn());
@@ -34,6 +35,39 @@ vi.mock("../../config/config.js", () => ({
   readConfigFileSnapshot: readConfigFileSnapshotMock,
   validateConfigObjectWithPlugins: validateConfigObjectWithPluginsMock,
   replaceConfigFile: replaceConfigFileMock,
+  transformConfigFileWithRetry: async (params: {
+    afterWrite?: unknown;
+    transform: (
+      currentConfig: OpenClawConfig,
+      context: { snapshot: ConfigSnapshotMock; previousHash: string | null; attempt: number },
+    ) =>
+      | Promise<{ nextConfig: OpenClawConfig; result?: unknown }>
+      | {
+          nextConfig: OpenClawConfig;
+          result?: unknown;
+        };
+  }) => {
+    const snapshot = (await readConfigFileSnapshotMock()) as ConfigSnapshotMock;
+    const previousHash = snapshot.hash ?? null;
+    const currentConfig = structuredClone(
+      snapshot.sourceConfig ?? snapshot.resolved ?? snapshot.runtimeConfig ?? snapshot.parsed ?? {},
+    );
+    const transformContext = { snapshot, previousHash, attempt: 0 };
+    const transformed = await params.transform(currentConfig, transformContext);
+    const afterWrite = params.afterWrite ?? { mode: "auto" };
+    await replaceConfigFileMock({ nextConfig: transformed.nextConfig, afterWrite });
+    return {
+      path: snapshot.path ?? "/tmp/openclaw.json",
+      previousHash,
+      persistedHash: "persisted-hash",
+      snapshot,
+      nextConfig: transformed.nextConfig,
+      result: transformed.result,
+      attempts: 1,
+      afterWrite,
+      followUp: { action: "none" },
+    };
+  },
 }));
 
 vi.mock("../../infra/archive.js", () => ({
@@ -100,13 +134,17 @@ const WRITE_GATEWAY_SCOPES = ["operator.admin", "operator.write", "operator.pair
 function buildPluginsParams(
   commandBodyNormalized: string,
   cfg: OpenClawConfig,
-  options?: { gatewayClientScopes?: string[] },
+  options?: { gatewayClientScopes?: string[]; omitGatewayClientScopes?: boolean },
 ) {
-  return buildPluginsCommandParams({
+  const params = buildPluginsCommandParams({
     commandBodyNormalized,
     cfg,
     gatewayClientScopes: options?.gatewayClientScopes,
   });
+  if (options?.omitGatewayClientScopes) {
+    delete params.ctx.GatewayClientScopes;
+  }
+  return params;
 }
 
 type MockCalls = {
@@ -133,22 +171,22 @@ function expectPluginEnabledInConfig(config: unknown, enabled: boolean) {
 }
 
 function expectLastReplaceConfig(enabled: boolean) {
-  expect(replaceConfigFileMock).toHaveBeenLastCalledWith(
-    expect.objectContaining({ afterWrite: { mode: "auto" } }),
-  );
   const calls = (replaceConfigFileMock as unknown as MockCalls).mock.calls;
   const [payload] = calls.at(-1) ?? [];
   const payloadRecord = requireRecord(payload, "replace config payload");
+  expect(Object.keys(payloadRecord).toSorted()).toEqual(["afterWrite", "nextConfig"]);
+  expect(payloadRecord.afterWrite).toEqual({ mode: "auto" });
   expectPluginEnabledInConfig(payloadRecord.nextConfig, enabled);
 }
 
 function expectLastRegistryRefresh(enabled: boolean) {
-  expect(refreshPluginRegistryAfterConfigMutationMock).toHaveBeenLastCalledWith(
-    expect.objectContaining({ reason: "policy-changed" }),
-  );
   const calls = (refreshPluginRegistryAfterConfigMutationMock as unknown as MockCalls).mock.calls;
   const [payload] = calls.at(-1) ?? [];
   const payloadRecord = requireRecord(payload, "registry refresh payload");
+  expect(Object.keys(payloadRecord).toSorted()).toEqual(["config", "logger", "reason"]);
+  expect(payloadRecord.reason).toBe("policy-changed");
+  const logger = getNestedRecord(payloadRecord, "logger", "registry refresh logger");
+  expect(logger.warn).toEqual(expect.any(Function));
   expectPluginEnabledInConfig(payloadRecord.config, enabled);
 }
 
@@ -248,6 +286,41 @@ describe("handlePluginsCommand", () => {
     expect(result?.reply?.text).toContain("requires operator.admin");
   });
 
+  it("blocks channel-authorized non-owner plugin toggles before config mutation", async () => {
+    const params = buildPluginsParams("/plugins enable superpowers", buildCfg(), {
+      omitGatewayClientScopes: true,
+    });
+    params.command.channel = "telegram";
+    params.command.channelId = "telegram";
+    params.command.surface = "telegram";
+    params.command.senderId = "telegram-user-3";
+    params.command.senderIsOwner = false;
+    params.command.isAuthorizedSender = true;
+    params.ctx.Provider = "telegram";
+    params.ctx.Surface = "telegram";
+
+    const result = await handlePluginsCommand(params, true);
+
+    expect(result?.shouldContinue).toBe(false);
+    expect(readConfigFileSnapshotMock).not.toHaveBeenCalled();
+    expect(replaceConfigFileMock).not.toHaveBeenCalled();
+    expect(refreshPluginRegistryAfterConfigMutationMock).not.toHaveBeenCalled();
+  });
+
+  it("allows gateway clients with operator.admin to toggle plugins", async () => {
+    validateConfigObjectWithPluginsMock.mockImplementation((next) => ({ ok: true, config: next }));
+    const params = buildPluginsParams("/plugins disable superpowers", buildCfg(), {
+      gatewayClientScopes: ["operator.admin", "operator.write"],
+    });
+    params.command.senderIsOwner = false;
+
+    const result = await handlePluginsCommand(params, true);
+
+    expect(result?.reply?.text).toContain('Plugin "superpowers" disabled');
+    expectLastReplaceConfig(false);
+    expectLastRegistryRefresh(false);
+  });
+
   it("enables and disables a discovered plugin", async () => {
     validateConfigObjectWithPluginsMock.mockImplementation((next) => ({ ok: true, config: next }));
 
@@ -324,7 +397,7 @@ describe("handlePluginsCommand", () => {
 
   it("returns an explicit unauthorized reply for native /plugins list", async () => {
     const params = buildPluginsParams("/plugins list", buildCfg());
-    params.command.senderIsOwner = false;
+    params.command.isAuthorizedSender = false;
     params.ctx.Provider = "telegram";
     params.ctx.Surface = "telegram";
     params.ctx.CommandSource = "native";

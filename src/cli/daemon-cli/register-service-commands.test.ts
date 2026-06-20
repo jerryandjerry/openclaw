@@ -1,3 +1,4 @@
+// Register service command tests cover daemon service subcommand registration.
 import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { addGatewayServiceCommands } from "./register-service-commands.js";
@@ -37,7 +38,7 @@ function createGatewayParentLikeCommand() {
 
 function expectSingleDaemonCall(mockFn: ReturnType<typeof vi.fn>) {
   expect(mockFn).toHaveBeenCalledTimes(1);
-  const opts = mockFn.mock.calls.at(0)?.[0] as Record<string, unknown> | undefined;
+  const opts = mockFn.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
   if (opts === undefined) {
     throw new Error("expected daemon call options");
   }

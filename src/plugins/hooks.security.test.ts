@@ -1,3 +1,4 @@
+// Verifies plugin hook security constraints and rejections.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHookRunner } from "./hooks.js";
 import { addStaticTestHooks } from "./hooks.test-helpers.js";
@@ -63,7 +64,7 @@ function expectTerminalHookState<
 }
 
 function requireLoggerErrorMessage(logger: { error: { mock: { calls: unknown[][] } } }): string {
-  const call = logger.error.mock.calls.at(0);
+  const call = logger.error.mock.calls[0];
   if (!call) {
     throw new Error("expected logger error call");
   }

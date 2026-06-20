@@ -1,3 +1,4 @@
+// Channels config-only status tests cover fallback output when gateway status is unavailable.
 import { describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import { makeDirectPlugin } from "../test-utils/channel-plugin-test-fixtures.js";
@@ -192,7 +193,7 @@ function expectResolvedTokenStatusSummary(
 }
 
 function requireReadOnlyPluginListCall(): unknown[] {
-  const call = listReadOnlyChannelPluginsForConfig.mock.calls.at(0);
+  const call = listReadOnlyChannelPluginsForConfig.mock.calls[0];
   if (!call) {
     throw new Error("expected listReadOnlyChannelPluginsForConfig call");
   }

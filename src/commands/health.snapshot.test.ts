@@ -1,3 +1,4 @@
+// Health snapshot tests cover channel, session, runtime, and gateway health snapshot construction.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -5,10 +6,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { ChannelAccountSnapshot } from "../channels/plugins/types.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
+import { MAX_TIMER_TIMEOUT_MS } from "../shared/number-coercion.js";
 import type { HealthSummary } from "./health.js";
 
 let testConfig: Record<string, unknown> = {};
 let testStore: Record<string, { updatedAt?: number }> = {};
+let listHealthSessionEntriesCalls: Array<{ agentId?: string; storePath?: string }> = [];
 let healthPluginsForTest: HealthTestPlugin[] = [];
 
 let setActivePluginRegistry: typeof import("../plugins/runtime.js").setActivePluginRegistry;
@@ -67,6 +70,12 @@ async function loadFreshHealthModulesForTest() {
   }));
   vi.doMock("../config/sessions/store.js", () => ({
     loadSessionStore: () => testStore,
+  }));
+  vi.doMock("../config/sessions/session-accessor.js", () => ({
+    listSessionEntries: (scope?: { agentId?: string; storePath?: string }) => {
+      listHealthSessionEntriesCalls.push(scope ?? {});
+      return Object.entries(testStore).map(([sessionKey, entry]) => ({ sessionKey, entry }));
+    },
   }));
   vi.doMock("../plugins/runtime/runtime-web-channel-plugin.js", () => ({
     webAuthExists: vi.fn(async () => true),
@@ -461,6 +470,7 @@ describe("getHealthSnapshot", () => {
   beforeEach(() => {
     buildTelegramHealthSummaryForTest = buildTelegramHealthSummary;
     probeTelegramAccountForTestOverride = undefined;
+    listHealthSessionEntriesCalls = [];
     healthPluginsForTest = [createTelegramHealthPlugin()];
     setActivePluginRegistry(
       createTestRegistry([
@@ -472,6 +482,23 @@ describe("getHealthSnapshot", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+
+  it("clamps oversized probe timeouts", async () => {
+    testConfig = {
+      session: { store: "/tmp/x" },
+      channels: { telegram: { botToken: "123:test" } },
+    };
+    testStore = {};
+    const timeouts: number[] = [];
+    probeTelegramAccountForTestOverride = async (_account, timeoutMs) => {
+      timeouts.push(timeoutMs);
+      return { ok: true };
+    };
+
+    await getHealthSnapshot({ timeoutMs: Number.MAX_SAFE_INTEGER });
+
+    expect(timeouts).toEqual([MAX_TIMER_TIMEOUT_MS]);
   });
 
   it("includes active plugin load errors in the health snapshot", async () => {
@@ -557,8 +584,8 @@ describe("getHealthSnapshot", () => {
     expect(telegram.probe?.ok).toBe(true);
     expect(telegram.probe?.bot?.username).toBe("bot");
     expect(telegram.probe?.webhook?.url).toMatch(/^https:/);
-    expect(calls.some((call) => call.includes("/getMe"))).toBe(true);
-    expect(calls.some((call) => call.includes("/getWebhookInfo"))).toBe(true);
+    expect(calls.join("\n")).toContain("/getMe");
+    expect(calls.join("\n")).toContain("/getWebhookInfo");
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-health-"));
     const tokenFile = path.join(tmpDir, "telegram-token");
@@ -570,7 +597,7 @@ describe("getHealthSnapshot", () => {
       );
       expect(tokenFileProbe.telegram.configured).toBe(true);
       expect(tokenFileProbe.telegram.probe?.ok).toBe(true);
-      expect(tokenFileProbe.calls.some((call) => call.includes("bott-file/getMe"))).toBe(true);
+      expect(tokenFileProbe.calls.join("\n")).toContain("bott-file/getMe");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -816,13 +843,13 @@ describe("getHealthSnapshot", () => {
     };
 
     expect(imessage.configured).toBe(true);
-    expect(imessage.probe).toMatchObject({
+    expect(imessage.probe).toEqual({
       ok: false,
       error:
         "imsg cannot access ~/Library/Messages/chat.db. Grant Full Disk Access to the Gateway/launcher process and restart Gateway.",
     });
     expect(imessage.probe?.privateApi).toBeUndefined();
-    expect(imessage.accounts?.default?.probe).toMatchObject({
+    expect(imessage.accounts?.default?.probe).toEqual({
       ok: false,
       error:
         "imsg cannot access ~/Library/Messages/chat.db. Grant Full Disk Access to the Gateway/launcher process and restart Gateway.",
@@ -932,5 +959,21 @@ describe("getHealthSnapshot", () => {
     expect(main?.heartbeat.every).toBe("disabled");
     expect(ops?.heartbeat.everyMs).toBe(60 * 60 * 1000);
     expect(ops?.heartbeat.every).toBe("1h");
+  });
+
+  it("passes agent scope when summarizing configured agent sessions", async () => {
+    testConfig = {
+      agents: {
+        list: [{ id: "main", default: true }, { id: "ops" }],
+      },
+    };
+    testStore = {};
+
+    await getHealthSnapshot({ timeoutMs: 10, probe: false });
+
+    expect(listHealthSessionEntriesCalls).toEqual([
+      { agentId: "main", storePath: "/tmp/sessions.json" },
+      { agentId: "ops", storePath: "/tmp/sessions.json" },
+    ]);
   });
 });

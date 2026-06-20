@@ -1,3 +1,4 @@
+// Tests heartbeat runner response prefix template handling.
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { runHeartbeatOnce, type HeartbeatDeps } from "./heartbeat-runner.js";
@@ -52,7 +53,7 @@ describe("runHeartbeatOnce responsePrefix templates", () => {
   }
 
   function requireFirstMockCall<T>(mock: { mock: { calls: T[][] } }, label: string): T[] {
-    const call = mock.mock.calls.at(0);
+    const call = mock.mock.calls[0];
     if (!call) {
       throw new Error(`expected ${label} call`);
     }
@@ -74,7 +75,7 @@ describe("runHeartbeatOnce responsePrefix templates", () => {
 
       replySpy.mockImplementation(async (_ctx, opts) => {
         opts?.onModelSelected?.({
-          provider: "openai-codex",
+          provider: "openai",
           model: "gpt-5.4-20260401",
           thinkLevel: "high",
         });
@@ -103,7 +104,7 @@ describe("runHeartbeatOnce responsePrefix templates", () => {
     expect(sendTelegram).toHaveBeenCalledTimes(1);
     const [target, message, options] = requireFirstMockCall(sendTelegram, "telegram send");
     expect(target).toBe(TELEGRAM_GROUP);
-    expect(message).toBe("[openai-codex/gpt-5.4|think:high] Heartbeat alert");
+    expect(message).toBe("[openai/gpt-5.4|think:high] Heartbeat alert");
     expect(typeof options).toBe("object");
   });
 

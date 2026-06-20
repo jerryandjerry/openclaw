@@ -1,3 +1,4 @@
+// Backup create/verify tests cover archive creation, runtime output, and verification failure handling.
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeEnv } from "../runtime.js";
 import { backupCreateCommand } from "./backup.js";
@@ -33,7 +34,7 @@ function createRuntime(): RuntimeEnv {
 }
 
 function requireBackupVerifyCall(): [RuntimeEnv, Record<string, unknown>] {
-  const call = backupVerifyCommandMock.mock.calls.at(0);
+  const call = backupVerifyCommandMock.mock.calls[0];
   if (!call) {
     throw new Error("expected backup verify command call");
   }

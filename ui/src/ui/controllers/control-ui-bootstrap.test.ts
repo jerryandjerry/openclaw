@@ -1,7 +1,8 @@
 /* @vitest-environment jsdom */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CONTROL_UI_BOOTSTRAP_CONFIG_PATH } from "../../../../src/gateway/control-ui-contract.js";
+import { resolveUiHourCycleOptions, setUiTimeFormatPreference } from "../format.ts";
 import { loadControlUiBootstrapConfig } from "./control-ui-bootstrap.ts";
 
 function requireFetchCall(fetchMock: ReturnType<typeof vi.fn>, index = 0) {
@@ -13,6 +14,45 @@ function requireFetchCall(fetchMock: ReturnType<typeof vi.fn>, index = 0) {
 }
 
 describe("loadControlUiBootstrapConfig", () => {
+  afterEach(() => {
+    setUiTimeFormatPreference("auto");
+  });
+
+  it("threads agents.defaults.timeFormat into the UI hour-cycle preference", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        basePath: "",
+        assistantName: "Main",
+        assistantAvatar: "M",
+        assistantAgentId: "main",
+        timeFormat: "24",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const state = {
+      basePath: "",
+      assistantName: "Assistant",
+      assistantAvatar: null,
+      assistantAvatarSource: null,
+      assistantAvatarStatus: null,
+      assistantAvatarReason: null,
+      assistantAgentId: null,
+      localMediaPreviewRoots: [],
+      embedSandboxMode: "scripts" as const,
+      allowExternalEmbedUrls: false,
+      chatMessageMaxWidth: null,
+      serverVersion: null,
+    };
+
+    await loadControlUiBootstrapConfig(state);
+
+    expect(resolveUiHourCycleOptions()).toEqual({ hour12: false });
+
+    vi.unstubAllGlobals();
+  });
+
   it("loads assistant identity from the bootstrap endpoint", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -316,14 +356,10 @@ describe("loadControlUiBootstrapConfig", () => {
     await loadControlUiBootstrapConfig(state);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [, firstInit] = fetchMock.mock.calls.at(0) ?? [];
-    const [, secondInit] = fetchMock.mock.calls.at(1) ?? [];
-    expect((firstInit?.headers as Record<string, string> | undefined)?.Authorization).toBe(
-      "Bearer stale-token",
-    );
-    expect((secondInit?.headers as Record<string, string> | undefined)?.Authorization).toBe(
-      "Bearer fresh-password",
-    );
+    const firstFetchCall = requireFetchCall(fetchMock, 0);
+    const secondFetchCall = requireFetchCall(fetchMock, 1);
+    expect(firstFetchCall.headers.Authorization).toBe("Bearer stale-token");
+    expect(secondFetchCall.headers.Authorization).toBe("Bearer fresh-password");
     expect(state.assistantName).toBe("Ops");
     expect(state.serverVersion).toBe("2026.4.22");
 

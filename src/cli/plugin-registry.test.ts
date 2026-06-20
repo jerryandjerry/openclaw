@@ -1,3 +1,4 @@
+// Plugin registry CLI tests cover registry loading, command integration, and reset behavior.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 
@@ -32,7 +33,7 @@ function expectConfiguredChannelPluginIdsParams(expected: {
   workspaceDir?: string;
 }) {
   expect(mocks.resolveConfiguredChannelPluginIds).toHaveBeenCalledTimes(1);
-  const params = mocks.resolveConfiguredChannelPluginIds.mock.calls.at(0)?.[0] as
+  const params = mocks.resolveConfiguredChannelPluginIds.mock.calls[0]?.[0] as
     | { config?: unknown; env?: NodeJS.ProcessEnv; workspaceDir?: string }
     | undefined;
   expect(params?.config).toBe(expected.config);
@@ -99,7 +100,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 let ensurePluginRegistryLoaded: typeof import("./plugin-registry.js").ensurePluginRegistryLoaded;
-let resetPluginRegistryLoadedForTests: typeof import("./plugin-registry.js").__testing.resetPluginRegistryLoadedForTests;
+let resetPluginRegistryLoadedForTests: typeof import("./plugin-registry.js").testing.resetPluginRegistryLoadedForTests;
 
 vi.mock("../plugins/loader.js", () => ({
   loadOpenClawPlugins: (...args: Parameters<typeof mocks.loadOpenClawPlugins>) =>
@@ -180,7 +181,7 @@ describe("ensurePluginRegistryLoaded", () => {
   beforeAll(async () => {
     const mod = await import("./plugin-registry.js");
     ensurePluginRegistryLoaded = mod.ensurePluginRegistryLoaded;
-    resetPluginRegistryLoadedForTests = () => mod.__testing.resetPluginRegistryLoadedForTests();
+    resetPluginRegistryLoadedForTests = () => mod.testing.resetPluginRegistryLoadedForTests();
   });
 
   beforeEach(() => {

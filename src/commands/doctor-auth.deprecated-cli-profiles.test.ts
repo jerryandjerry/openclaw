@@ -1,3 +1,4 @@
+// Doctor deprecated CLI profile tests cover legacy auth profile migration and warnings.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import type { OpenClawConfig } from "../config/config.js";
@@ -26,7 +27,7 @@ vi.mock("../agents/auth-profiles/store.js", () => ({
   ensureAuthProfileStore: () => authProfileStoreMock.store,
 }));
 
-vi.mock("../terminal/note.js", () => ({
+vi.mock("../../packages/terminal-core/src/note.js", () => ({
   note: vi.fn(),
 }));
 
@@ -58,7 +59,7 @@ function requireAuthConfig(config: OpenClawConfig): NonNullable<OpenClawConfig["
 }
 
 function requireFirstMockArg<T>(mock: { mock: { calls: T[][] } }, label: string): T {
-  const call = mock.mock.calls.at(0);
+  const call = mock.mock.calls[0];
   if (!call) {
     throw new Error(`expected ${label} call`);
   }

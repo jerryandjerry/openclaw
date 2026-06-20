@@ -1,3 +1,4 @@
+// Discord tests cover listeners plugin behavior.
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 let DiscordMessageListener: typeof import("./listeners.js").DiscordMessageListener;
@@ -15,7 +16,7 @@ function createLogger() {
 }
 
 function firstErrorMessage(logger: ReturnType<typeof createLogger>): string {
-  const firstCall = logger.error.mock.calls.at(0);
+  const firstCall = logger.error.mock.calls[0];
   if (!firstCall) {
     throw new Error("expected logger.error call");
   }

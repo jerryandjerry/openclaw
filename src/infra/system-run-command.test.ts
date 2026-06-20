@@ -1,3 +1,4 @@
+// Covers system-run command formatting and consistency checks.
 import { describe, expect, test } from "vitest";
 import {
   extractShellCommandFromArgv,
@@ -46,6 +47,10 @@ describe("system run command helpers", () => {
     expect(extractShellCommandFromArgv(["cmd.exe", "/d", "/s", "/c", "echo hi"])).toBe("echo hi");
   });
 
+  test("extractShellCommandFromArgv extracts cmd.exe -c command", () => {
+    expect(extractShellCommandFromArgv(["cmd.exe", "/d", "/s", "-c", "echo hi"])).toBe("echo hi");
+  });
+
   test("extractShellCommandFromArgv unwraps /usr/bin/env shell wrappers", () => {
     expect(extractShellCommandFromArgv(["/usr/bin/env", "bash", "-c", "echo hi"])).toBe("echo hi");
     expect(extractShellCommandFromArgv(["/usr/bin/env", "FOO=bar", "zsh", "-c", "echo hi"])).toBe(
@@ -73,8 +78,25 @@ describe("system run command helpers", () => {
     },
     { argv: ["fish", "-c", "echo hi"], expected: "echo hi" },
     { argv: ["pwsh", "-Command", "Get-Date"], expected: "Get-Date" },
+    {
+      argv: ["pwsh", "-Command", "allowed.exe", ";", "unlisted.exe"],
+      expected: "allowed.exe ; unlisted.exe",
+    },
+    {
+      argv: ["pwsh", "-CommandWithArgs", "allowed.exe", ";", "unlisted.exe"],
+      expected: "allowed.exe ; unlisted.exe",
+    },
     { argv: ["pwsh", "-File", "script.ps1"], expected: "script.ps1" },
+    {
+      argv: ["pwsh", "-File", "script.ps1", "-ExtraArg"],
+      expected: "script.ps1",
+    },
     { argv: ["powershell", "-f", "script.ps1"], expected: "script.ps1" },
+    { argv: ["pwsh", "-ec", "ZQBjAGgAbwA="], expected: "ZQBjAGgAbwA=" },
+    { argv: ["pwsh", "/NoProfile", "/ec", "ZQBjAGgAbwA="], expected: "ZQBjAGgAbwA=" },
+    { argv: ["pwsh", "-en", "ZQBjAGgAbwA="], expected: "ZQBjAGgAbwA=" },
+    { argv: ["pwsh", "-ea", "stop", "-Command", "Get-Date"], expected: "Get-Date" },
+    { argv: ["pwsh", "-cus", "pipe-name", "-ec", "ZQBjAGgAbwA="], expected: "ZQBjAGgAbwA=" },
     { argv: ["pwsh", "-EncodedCommand", "ZQBjAGgAbwA="], expected: "ZQBjAGgAbwA=" },
     { argv: ["powershell", "-enc", "ZQBjAGgAbwA="], expected: "ZQBjAGgAbwA=" },
     { argv: ["pwsh", "-ec", "ZQBjAGgAbwA="], expected: "ZQBjAGgAbwA=" },

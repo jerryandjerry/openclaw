@@ -1,3 +1,4 @@
+// Non-interactive API key tests cover flag, environment, auth-profile, and secret-ref mode precedence.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveNonInteractiveApiKey } from "./api-keys.js";
 
@@ -191,7 +192,7 @@ describe("resolveNonInteractiveApiKey", () => {
 
     expect(result).toEqual({ key: "custom-profile-key", source: "profile" });
     expect(resolveApiKeyForProfile).toHaveBeenCalledOnce();
-    const [profileParams] = resolveApiKeyForProfile.mock.calls.at(0) ?? [];
+    const [profileParams] = resolveApiKeyForProfile.mock.calls[0] ?? [];
     expect(profileParams?.profileId).toBe("custom-models-custom-local:default");
   });
 });

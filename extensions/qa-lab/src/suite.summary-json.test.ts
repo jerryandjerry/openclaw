@@ -1,4 +1,6 @@
+// Qa Lab tests cover suite.summary json plugin behavior.
 import { describe, expect, it } from "vitest";
+import { buildQaSuiteEvidenceSummary } from "./evidence-summary.js";
 import { buildQaSuiteSummaryJson } from "./suite.js";
 
 describe("buildQaSuiteSummaryJson", () => {
@@ -44,8 +46,17 @@ describe("buildQaSuiteSummaryJson", () => {
     expect(json.run.scenarioIds).toEqual(scenarioIds);
   });
 
+  it("records the runtime pair when the suite runs the runtime axis", () => {
+    const json = buildQaSuiteSummaryJson({
+      ...baseParams,
+      runtimePair: ["openclaw", "codex"],
+    });
+
+    expect(json.run.runtimePair).toEqual(["openclaw", "codex"]);
+  });
+
   it("treats an empty scenarioIds array as unspecified (no filter)", () => {
-    // A CLI path that omits --scenario passes an empty array to runQaSuite.
+    // A CLI path that omits --scenario passes an empty array to runQaFlowSuite.
     // The summary must encode that as null so downstream parity/report
     // tooling doesn't interpret a full run as an explicit empty selection.
     const json = buildQaSuiteSummaryJson({
@@ -58,12 +69,12 @@ describe("buildQaSuiteSummaryJson", () => {
   it("records an Anthropic baseline lane cleanly for parity runs", () => {
     const json = buildQaSuiteSummaryJson({
       ...baseParams,
-      primaryModel: "anthropic/claude-opus-4-6",
+      primaryModel: "anthropic/claude-opus-4-8",
       alternateModel: "anthropic/claude-sonnet-4-6",
     });
-    expect(json.run.primaryModel).toBe("anthropic/claude-opus-4-6");
+    expect(json.run.primaryModel).toBe("anthropic/claude-opus-4-8");
     expect(json.run.primaryProvider).toBe("anthropic");
-    expect(json.run.primaryModelName).toBe("claude-opus-4-6");
+    expect(json.run.primaryModelName).toBe("claude-opus-4-8");
     expect(json.run.alternateModel).toBe("anthropic/claude-sonnet-4-6");
     expect(json.run.alternateProvider).toBe("anthropic");
     expect(json.run.alternateModelName).toBe("claude-sonnet-4-6");
@@ -93,6 +104,78 @@ describe("buildQaSuiteSummaryJson", () => {
     });
   });
 
+  it("preserves the evidence summary when provided", () => {
+    const evidence = buildQaSuiteEvidenceSummary({
+      artifactPaths: [{ kind: "summary", path: "qa-suite-summary.json" }],
+      scenarioDefinitions: [
+        {
+          id: "dm-chat-baseline",
+          title: "DM baseline conversation",
+          sourcePath: "qa/scenarios/channels/dm-chat-baseline.yaml",
+          surface: "dm",
+          coverage: {
+            primary: ["channels.dm"],
+          },
+        },
+      ],
+      channelId: "qa-channel",
+      generatedAt: "2026-04-11T00:05:00.000Z",
+      primaryModel: "mock-openai/gpt-5.5",
+      providerMode: "mock-openai",
+      scenarioResults: [{ name: "DM baseline conversation", status: "pass" }],
+    });
+    const json = buildQaSuiteSummaryJson({
+      ...baseParams,
+      evidence,
+    });
+
+    expect(json.evidence).toEqual(evidence);
+  });
+
+  it("preserves scenario-level runtime parity payloads", () => {
+    const json = buildQaSuiteSummaryJson({
+      ...baseParams,
+      scenarios: [
+        {
+          name: "Scenario A",
+          status: "pass" as const,
+          steps: [],
+          runtimeParity: {
+            scenarioId: "scenario-a",
+            drift: "none" as const,
+            cells: {
+              openclaw: {
+                runtime: "openclaw" as const,
+                transcriptBytes: "",
+                toolCalls: [],
+                finalText: "done",
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                wallClockMs: 10,
+                bootStateLines: [],
+              },
+              codex: {
+                runtime: "codex" as const,
+                transcriptBytes: "",
+                toolCalls: [],
+                finalText: "done",
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                wallClockMs: 10,
+                bootStateLines: [],
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    expect(json.scenarios[0]).toMatchObject({
+      runtimeParity: {
+        scenarioId: "scenario-a",
+        drift: "none",
+      },
+    });
+  });
+
   it("records optional runtime metrics when provided", () => {
     const json = buildQaSuiteSummaryJson({
       ...baseParams,
@@ -103,6 +186,28 @@ describe("buildQaSuiteSummaryJson", () => {
         gatewayProcessRssStartBytes: 100_000_000,
         gatewayProcessRssEndBytes: 125_000_000,
         gatewayProcessRssDeltaBytes: 25_000_000,
+        gatewayProcessRssPeakBytes: 140_000_000,
+        gatewayProcessRssPeakDeltaBytes: 40_000_000,
+        gatewayProcessRssSamples: [
+          {
+            label: "suite-start",
+            at: "2026-04-22T12:00:00.000Z",
+            gatewayProcessRssBytes: 100_000_000,
+          },
+          {
+            label: "scenario:canary:finish",
+            at: "2026-04-22T12:00:10.000Z",
+            gatewayProcessRssBytes: 140_000_000,
+          },
+        ],
+        gatewayHeapSnapshots: [
+          {
+            label: "suite-start",
+            at: "2026-04-22T12:00:01.000Z",
+            path: "artifacts/gateway-heap-snapshots/suite-start.heapsnapshot",
+            bytes: 12_345,
+          },
+        ],
       },
     });
     expect(json.metrics).toEqual({
@@ -112,6 +217,28 @@ describe("buildQaSuiteSummaryJson", () => {
       gatewayProcessRssStartBytes: 100_000_000,
       gatewayProcessRssEndBytes: 125_000_000,
       gatewayProcessRssDeltaBytes: 25_000_000,
+      gatewayProcessRssPeakBytes: 140_000_000,
+      gatewayProcessRssPeakDeltaBytes: 40_000_000,
+      gatewayProcessRssSamples: [
+        {
+          label: "suite-start",
+          at: "2026-04-22T12:00:00.000Z",
+          gatewayProcessRssBytes: 100_000_000,
+        },
+        {
+          label: "scenario:canary:finish",
+          at: "2026-04-22T12:00:10.000Z",
+          gatewayProcessRssBytes: 140_000_000,
+        },
+      ],
+      gatewayHeapSnapshots: [
+        {
+          label: "suite-start",
+          at: "2026-04-22T12:00:01.000Z",
+          path: "artifacts/gateway-heap-snapshots/suite-start.heapsnapshot",
+          bytes: 12_345,
+        },
+      ],
     });
   });
 });

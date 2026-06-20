@@ -1,3 +1,4 @@
+// Daemon install integration tests cover service install paths with filesystem fixtures.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -158,7 +159,7 @@ describe("runDaemonInstall integration", () => {
     const persistedToken = gateway.auth?.token;
     expect(persistedToken).toEqual(expect.stringMatching(/^[0-9a-f]{48}$/));
 
-    const installEnv = serviceMock.install.mock.calls.at(0)?.[0]?.environment;
+    const installEnv = serviceMock.install.mock.calls[0]?.[0]?.environment;
     expect(installEnv?.OPENCLAW_GATEWAY_TOKEN).toBeUndefined();
   });
 });

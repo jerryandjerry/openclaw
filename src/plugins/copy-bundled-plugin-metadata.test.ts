@@ -1,3 +1,4 @@
+// Covers copying bundled plugin metadata for package output.
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -414,7 +415,7 @@ describe("copyBundledPluginMetadata", () => {
       expectedExists: false,
     },
     {
-      name: "still bundles previously released optional plugins without the opt-in env",
+      name: "removes externalized optional plugin metadata from the core dist",
       pluginId: "whatsapp",
       packageName: "@openclaw/whatsapp",
       packageOpenClaw: {
@@ -422,7 +423,7 @@ describe("copyBundledPluginMetadata", () => {
         install: { npmSpec: "@openclaw/whatsapp" },
       },
       env: {},
-      expectedExists: true,
+      expectedExists: false,
     },
   ] as const)("$name", ({ pluginId, packageName, packageOpenClaw, env, expectedExists }) => {
     const repoRoot = makeRepoRoot(`openclaw-bundled-plugin-${pluginId}-`);

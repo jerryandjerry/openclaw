@@ -1,3 +1,4 @@
+// Memory Wiki tests cover index plugin behavior.
 import { describe, expect, it } from "vitest";
 import plugin from "./index.js";
 import { createMemoryWikiTestHarness } from "./src/test-helpers.js";
@@ -49,7 +50,7 @@ describe("memory-wiki plugin", () => {
       "wiki_get",
     ]);
     expect(registerCli).toHaveBeenCalledTimes(1);
-    expect(registerCli.mock.calls.at(0)?.[1]).toStrictEqual({
+    expect(registerCli.mock.calls[0]?.[1]).toStrictEqual({
       descriptors: [
         {
           name: "wiki",

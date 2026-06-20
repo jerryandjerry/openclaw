@@ -1,3 +1,4 @@
+// Preferred provider tests cover auth-choice provider selection and runtime provider discovery.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { resolvePluginProviders as resolvePluginProvidersFn } from "../plugins/providers.runtime.js";
 
@@ -23,7 +24,7 @@ vi.mock("../plugins/providers.runtime.js", () => ({
   resolvePluginProviders,
 }));
 
-import { resolvePreferredProviderForAuthChoice } from "./auth-choice.preferred-provider.js";
+import { resolvePreferredProviderForAuthChoice } from "../plugins/provider-auth-choice-preference.js";
 
 describe("resolvePreferredProviderForAuthChoice", () => {
   beforeEach(() => {
@@ -125,7 +126,7 @@ describe("resolvePreferredProviderForAuthChoice", () => {
       }),
     ).resolves.toBe("demo-provider");
     expect(resolvePluginProviders).toHaveBeenCalledOnce();
-    const [pluginProviderOptions] = resolvePluginProviders.mock.calls.at(0) as unknown as [
+    const [pluginProviderOptions] = resolvePluginProviders.mock.calls[0] as unknown as [
       ResolvePluginProvidersOptions,
     ];
     expect(pluginProviderOptions?.mode).toBe("setup");

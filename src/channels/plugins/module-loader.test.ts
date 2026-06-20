@@ -1,3 +1,4 @@
+// Module loader tests cover channel plugin module resolution and import failure handling.
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -29,7 +30,7 @@ function createTempDir(): string {
 function requireCreateJitiCall(
   createJiti: ReturnType<typeof vi.fn>,
 ): [string, { tryNative?: boolean }] {
-  const call = createJiti.mock.calls.at(0);
+  const call = createJiti.mock.calls[0];
   if (!call) {
     throw new Error("expected createJiti call");
   }
