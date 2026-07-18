@@ -1,12 +1,10 @@
 // Gateway reachability probe client.
 // Connects to a gateway and summarizes auth, health, status, and presence.
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
 } from "../../packages/gateway-protocol/src/client-info.js";
-import { resolveStateDir } from "../config/paths.js";
 import { loadDeviceAuthToken } from "../infra/device-auth-store.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { SystemPresence } from "../infra/system-presence.js";
@@ -60,7 +58,9 @@ export type GatewayProbeResult = {
   configSnapshot: unknown;
 };
 
-export const MIN_PROBE_TIMEOUT_MS = 250;
+type GatewayProbeDetailLevel = "none" | "presence" | "config" | "full";
+
+const MIN_PROBE_TIMEOUT_MS = 250;
 export const MAX_TIMER_DELAY_MS = MAX_SAFE_TIMEOUT_DELAY_MS;
 const PAIRING_REQUIRED_PATTERN = /\bpairing required\b/i;
 const OPERATOR_READ_SCOPE = "operator.read";
@@ -193,14 +193,14 @@ function resolveProbeAuthSummary(params: {
   };
 }
 
-export function isPairingPendingProbeFailure(params: {
+function isPairingPendingProbeFailure(params: {
   error?: string | null;
   close?: GatewayProbeClose | null;
 }): boolean {
   return PAIRING_REQUIRED_PATTERN.test(params.close?.reason ?? params.error ?? "");
 }
 
-export function resolveGatewayProbeCapability(params: {
+function resolveGatewayProbeCapability(params: {
   auth?: Pick<GatewayProbeAuthSummary, "scopes"> | null;
   authMetadataPresent?: boolean;
   error?: string | null;
@@ -233,7 +233,7 @@ export async function probeGateway(opts: {
   timeoutMs: number;
   preauthHandshakeTimeoutMs?: number;
   includeDetails?: boolean;
-  detailLevel?: "none" | "presence" | "full";
+  detailLevel?: GatewayProbeDetailLevel;
   tlsFingerprint?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<GatewayProbeResult> {
@@ -255,8 +255,7 @@ export async function probeGateway(opts: {
         return null;
       }
       const { loadDeviceIdentityIfPresent } = await import("../infra/device-identity.js");
-      const stateDir = resolveStateDir(opts.env);
-      const identity = loadDeviceIdentityIfPresent(path.join(stateDir, "identity", "device.json"));
+      const identity = loadDeviceIdentityIfPresent({ env: opts.env });
       if (!identity) {
         return null;
       }
@@ -445,6 +444,19 @@ export async function probeGateway(opts: {
                 status: null,
                 presence: Array.isArray(presence) ? (presence as SystemPresence[]) : null,
                 configSnapshot: null,
+              });
+              return;
+            }
+            if (detailLevel === "config") {
+              const configSnapshot = await client.request("config.get", {});
+              settleProbe({
+                ok: true,
+                error: null,
+                verifiedRead: true,
+                health: null,
+                status: null,
+                presence: null,
+                configSnapshot,
               });
               return;
             }

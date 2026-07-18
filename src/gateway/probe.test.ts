@@ -162,8 +162,8 @@ vi.mock("../infra/device-identity.js", () => ({
     }
     return deviceIdentityState.value;
   },
-  loadDeviceIdentityIfPresent: (filePath: unknown) => {
-    deviceIdentityState.identityPaths.push(filePath);
+  loadDeviceIdentityIfPresent: (options: unknown) => {
+    deviceIdentityState.identityPaths.push(options);
     if (deviceIdentityState.throwOnLoad) {
       throw new Error("read-only identity dir");
     }
@@ -397,9 +397,7 @@ describe("probeGateway", () => {
 
     await runTokenProbe({ env });
 
-    expect(deviceIdentityState.identityPaths).toEqual([
-      "/tmp/openclaw-probe-service-state/identity/device.json",
-    ]);
+    expect(deviceIdentityState.identityPaths).toEqual([{ env }]);
     expect(deviceIdentityState.tokenParams).toEqual([
       {
         deviceId: "test-device-identity",
@@ -490,6 +488,21 @@ describe("probeGateway", () => {
     expect(result.health).toBeNull();
     expect(result.status).toBeNull();
     expect(result.configSnapshot).toBeNull();
+  });
+
+  it("fetches only config for config-only probes", async () => {
+    const result = await probeGateway({
+      url: "ws://127.0.0.1:18789",
+      timeoutMs: 1_000,
+      detailLevel: "config",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(gatewayClientState.requests).toEqual(["config.get"]);
+    expect(result.health).toBeNull();
+    expect(result.status).toBeNull();
+    expect(result.presence).toBeNull();
+    expect(result.configSnapshot).toEqual({});
   });
 
   it("passes through tls fingerprints for secure daemon probes", async () => {

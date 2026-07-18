@@ -3,17 +3,24 @@
 // timeout handling, and grouped CI output.
 import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
+import pMap from "p-map";
+import prettyMilliseconds from "pretty-ms";
 
 const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_OUTPUT_MAX_BYTES = 512 * 1024;
-const TIMEOUT_KILL_GRACE_MS = 5_000;
+// Boundary checks are disposable subprocesses; bound descendant cleanup after timeout.
+const TIMEOUT_KILL_GRACE_MS = 250;
 const PROCESS_GROUP_EXIT_POLL_MS = 25;
-const POST_FORCE_KILL_WAIT_MS = 1_000;
+const POST_FORCE_KILL_WAIT_MS = 250;
+const MAX_TIMER_TIMEOUT_MS = 2_147_000_000;
 
 /** Ordered list of supplemental boundary checks used by CI sharding. */
+// prompt:snapshots:check is intentionally absent: it regenerates snapshots by
+// running real embedded-agent turns (~2min) and owns a dedicated CI lane
+// (check-prompt-snapshots) so no boundary shard carries that wall clock.
 export const BOUNDARY_CHECKS = [
-  ["prompt:snapshots:check", "pnpm", ["prompt:snapshots:check"]],
   ["plugin-extension-boundary", "pnpm", ["run", "lint:plugins:no-extension-imports"]],
+  ["lint:docker-e2e", "pnpm", ["run", "lint:docker-e2e"]],
   ["lint:tmp:no-random-messaging", "pnpm", ["run", "lint:tmp:no-random-messaging"]],
   ["lint:tmp:channel-agnostic-boundaries", "pnpm", ["run", "lint:tmp:channel-agnostic-boundaries"]],
   ["lint:tmp:tsgo-core-boundary", "pnpm", ["run", "lint:tmp:tsgo-core-boundary"]],
@@ -96,6 +103,14 @@ export function resolvePositiveInteger(value, fallback, label = "value") {
   return parsed;
 }
 
+function resolveTimerTimeoutMs(valueMs) {
+  const value = Number(valueMs);
+  if (!Number.isFinite(value)) {
+    return MAX_TIMER_TIMEOUT_MS;
+  }
+  return Math.min(Math.max(Math.floor(value), 1), MAX_TIMER_TIMEOUT_MS);
+}
+
 /**
  * Parses one N/TOTAL shard selector into zero-based index form.
  */
@@ -168,6 +183,15 @@ export function formatCommand({ command, args }) {
   return [command, ...args].join(" ");
 }
 
+function decodeUtf8Tail(buffer) {
+  let start = 0;
+  while (start < buffer.length && (buffer[start] & 0b1100_0000) === 0b1000_0000) {
+    start += 1;
+  }
+  // Appends are complete JS strings; only a byte slice's leading boundary can be partial.
+  return buffer.subarray(start).toString("utf8");
+}
+
 /**
  * Keeps only the tail of noisy check output so failure logs stay bounded.
  */
@@ -182,7 +206,7 @@ export function createBoundedOutputBuffer(maxBytes = DEFAULT_OUTPUT_MAX_BYTES) {
     const textBytes = Buffer.byteLength(text);
     if (textBytes >= limit) {
       const buffer = Buffer.from(text);
-      const tail = buffer.subarray(buffer.length - limit).toString("utf8");
+      const tail = decodeUtf8Tail(buffer.subarray(buffer.length - limit));
       chunks.splice(0, chunks.length, tail);
       bytes = Buffer.byteLength(tail);
       truncated = true;
@@ -203,7 +227,7 @@ export function createBoundedOutputBuffer(maxBytes = DEFAULT_OUTPUT_MAX_BYTES) {
       }
 
       const buffer = Buffer.from(first);
-      const tail = buffer.subarray(overflow).toString("utf8");
+      const tail = decodeUtf8Tail(buffer.subarray(overflow));
       chunks[0] = tail;
       bytes = chunks.reduce((total, chunk) => total + Buffer.byteLength(chunk), 0);
       truncated = true;
@@ -254,6 +278,16 @@ async function waitForProcessGroupExit(child, timeoutMs) {
   return !processGroupAlive(child);
 }
 
+async function finishTerminatedProcessTree(child, timeoutKillGraceMs = TIMEOUT_KILL_GRACE_MS) {
+  if (processGroupAlive(child)) {
+    await waitForProcessGroupExit(child, timeoutKillGraceMs);
+  }
+  if (processGroupAlive(child)) {
+    terminateChild(child, "SIGKILL");
+    await waitForProcessGroupExit(child, POST_FORCE_KILL_WAIT_MS);
+  }
+}
+
 function terminateActiveChildren(activeChildren, signal) {
   for (const child of activeChildren) {
     terminateChild(child, signal);
@@ -262,37 +296,74 @@ function terminateActiveChildren(activeChildren, signal) {
 
 function installActiveChildCleanup(activeChildren) {
   let active = true;
+  let shutdownChildren = [];
+  let shutdownPromise = null;
+  let shutdownForceKillTimer = null;
+  let resolveShutdownForceKill = null;
   const removeHandlers = () => {
     for (const [signal, handler] of signalHandlers) {
       process.off(signal, handler);
     }
     process.off("exit", exitHandler);
   };
-  const cleanup = (signal) => {
+  const forceKillShutdownChildren = () => {
+    if (shutdownForceKillTimer) {
+      clearTimeout(shutdownForceKillTimer);
+      shutdownForceKillTimer = null;
+    }
+    terminateActiveChildren(shutdownChildren, "SIGKILL");
+    resolveShutdownForceKill?.();
+  };
+  const cleanup = (signal, { waitForExit = false } = {}) => {
     if (!active) {
-      return;
+      return shutdownPromise ?? Promise.resolve();
     }
     active = false;
-    terminateActiveChildren(activeChildren, signal);
+    shutdownChildren = [...activeChildren];
+    terminateActiveChildren(shutdownChildren, signal);
+    if (!waitForExit) {
+      return Promise.resolve();
+    }
+    shutdownPromise = new Promise((resolveForceKill) => {
+      resolveShutdownForceKill = resolveForceKill;
+      // Keep this timer ref'ed: once the leader exits, group liveness can look
+      // gone while descendants are still running and still need the force kill.
+      shutdownForceKillTimer = setTimeout(forceKillShutdownChildren, TIMEOUT_KILL_GRACE_MS);
+    })
+      .then(() =>
+        Promise.all(
+          shutdownChildren.map((child) => waitForProcessGroupExit(child, POST_FORCE_KILL_WAIT_MS)),
+        ),
+      )
+      .then(() => undefined);
+    return shutdownPromise;
   };
   const signalHandlers = new Map();
   const signals =
     process.platform === "win32" ? ["SIGINT", "SIGTERM"] : ["SIGINT", "SIGTERM", "SIGHUP"];
   for (const signal of signals) {
     const handler = () => {
-      cleanup(signal);
-      removeHandlers();
-      process.kill(process.pid, signal);
+      if (shutdownPromise) {
+        forceKillShutdownChildren();
+        return;
+      }
+      void cleanup(signal, { waitForExit: true }).finally(() => {
+        removeHandlers();
+        process.kill(process.pid, signal);
+      });
     };
     signalHandlers.set(signal, handler);
-    process.once(signal, handler);
+    process.on(signal, handler);
   }
   const exitHandler = () => {
-    cleanup("SIGTERM");
+    void cleanup("SIGTERM");
   };
   process.once("exit", exitHandler);
 
   return () => {
+    if (shutdownPromise) {
+      return;
+    }
     active = false;
     removeHandlers();
   };
@@ -312,6 +383,7 @@ export function runSingleCheck(
   },
 ) {
   return new Promise((resolve) => {
+    const resolvedCheckTimeoutMs = resolveTimerTimeoutMs(checkTimeoutMs);
     const startedAt = performance.now();
     const child = spawn(check.command, check.args, {
       cwd,
@@ -345,19 +417,13 @@ export function runSingleCheck(
       });
     };
     const finishAfterTimeoutTeardown = async (code, signal) => {
-      if (processGroupAlive(child)) {
-        await waitForProcessGroupExit(child, TIMEOUT_KILL_GRACE_MS);
-      }
-      if (processGroupAlive(child)) {
-        terminateChild(child, "SIGKILL");
-        await waitForProcessGroupExit(child, POST_FORCE_KILL_WAIT_MS);
-      }
+      await finishTerminatedProcessTree(child, TIMEOUT_KILL_GRACE_MS);
       finish(code, signal);
     };
     const timeout = setTimeout(() => {
       timedOut = true;
       output.append(
-        `\n[boundary-check] ${check.label} timed out after ${formatDuration(checkTimeoutMs)}; terminating process group\n`,
+        `\n[boundary-check] ${check.label} timed out after ${formatDuration(resolvedCheckTimeoutMs)}; terminating process group\n`,
       );
       terminateChild(child, "SIGTERM");
       forceKillTimer = setTimeout(() => {
@@ -367,7 +433,7 @@ export function runSingleCheck(
         terminateChild(child, "SIGKILL");
       }, TIMEOUT_KILL_GRACE_MS);
       forceKillTimer.unref?.();
-    }, checkTimeoutMs);
+    }, resolvedCheckTimeoutMs);
     timeout.unref?.();
 
     child.stdout.setEncoding("utf8");
@@ -392,10 +458,10 @@ function formatDuration(ms) {
   if (!Number.isFinite(ms)) {
     return "";
   }
-  if (ms < 1000) {
-    return `${ms}ms`;
-  }
-  return `${(ms / 1000).toFixed(1)}s`;
+  const roundedMs = ms < 1000 ? Math.round(ms) : Math.round(ms / 100) * 100;
+  return prettyMilliseconds(Math.max(0, roundedMs), {
+    unitCount: 1,
+  });
 }
 
 function writeGroupedResult(result, output) {
@@ -443,43 +509,23 @@ export async function runChecks(
     outputMaxBytes = DEFAULT_OUTPUT_MAX_BYTES,
   } = {},
 ) {
-  const results = Array.from({ length: checks.length });
   const activeChildren = new Set();
   const removeActiveChildCleanup = installActiveChildCleanup(activeChildren);
-  let nextIndex = 0;
-  let active = 0;
+  let results;
 
   try {
-    await new Promise((resolve) => {
-      const launch = () => {
-        if (nextIndex >= checks.length && active === 0) {
-          resolve();
-          return;
-        }
-
-        while (active < concurrency && nextIndex < checks.length) {
-          const index = nextIndex;
-          const check = checks[nextIndex++];
-          active += 1;
-          void runSingleCheck(check, {
-            activeChildren,
-            checkTimeoutMs,
-            cwd,
-            env,
-            outputMaxBytes,
-          })
-            .then((result) => {
-              results[index] = result;
-            })
-            .finally(() => {
-              active -= 1;
-              launch();
-            });
-        }
-      };
-
-      launch();
-    });
+    results = await pMap(
+      checks,
+      (check) =>
+        runSingleCheck(check, {
+          activeChildren,
+          checkTimeoutMs,
+          cwd,
+          env,
+          outputMaxBytes,
+        }),
+      { concurrency, stopOnError: true },
+    );
   } finally {
     removeActiveChildCleanup();
   }
@@ -517,7 +563,7 @@ export function parseCliArgs(args, env = process.env) {
     }
     if (arg === "--shard") {
       const value = args[index + 1];
-      if (!value || value.startsWith("--")) {
+      if (!value || value.startsWith("-")) {
         throw new Error("--shard requires a value");
       }
       shardSpec = value;

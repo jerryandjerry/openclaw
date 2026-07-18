@@ -102,6 +102,8 @@ describe("tsdown config", () => {
       "cli/gateway-lifecycle.runtime",
       "agents/compaction-planning.worker",
       "agents/model-provider-auth.worker",
+      "state/openclaw-database-verify.worker",
+      "system-agent/setup-inference-detection.worker",
       "plugins/memory-state",
       "subagent-registry.runtime",
       "task-registry-control.runtime",
@@ -116,6 +118,8 @@ describe("tsdown config", () => {
       "plugins/runtime/index",
       "plugins/synthetic-auth.runtime",
       "web-fetch/runtime",
+      "mcp/openclaw-tools-serve",
+      "mcp/plugin-tools-serve",
       "plugin-sdk/compat",
       "plugin-sdk/index",
       bundledEntry("active-memory"),
@@ -156,6 +160,14 @@ describe("tsdown config", () => {
 
     expect(entrySources(distGraph)["plugins/hook-runner-global"]).toBe(
       "src/plugins/hook-runner-global.ts",
+    );
+  });
+
+  it("keeps worker environment bootstrap behind one stable dist entry", () => {
+    const distGraph = requireUnifiedDistGraph();
+
+    expect(entrySources(distGraph)["gateway/worker-environments/runtime"]).toBe(
+      "src/gateway/worker-environments/runtime.ts",
     );
   });
 
@@ -266,6 +278,8 @@ describe("tsdown config", () => {
 
     expect(alwaysBundle("@openclaw/fs-safe")).toBe(true);
     expect(alwaysBundle("@openclaw/fs-safe/path")).toBe(true);
+    expect(alwaysBundle("openclaw/plugin-sdk/ssrf-runtime-internal")).toBe(true);
+    expect(alwaysBundle("openclaw/plugin-sdk/ssrf-runtime")).toBe(false);
     expect(alwaysBundle("zod")).toBe(true);
     expect(alwaysBundle("zod/v4/core")).toBe(true);
     expect(alwaysBundle("not-a-runtime-dependency")).toBe(false);

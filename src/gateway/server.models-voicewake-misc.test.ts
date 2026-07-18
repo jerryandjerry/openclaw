@@ -5,8 +5,9 @@ import { createServer } from "node:net";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { WebSocket } from "ws";
-import type { ChannelOutboundAdapter } from "../channels/plugins/types.js";
+import type { ChannelOutboundAdapter } from "../channels/plugins/types.public.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../config/config.js";
+import type { GatewayAgentRuntime } from "../shared/session-types.js";
 import { createOutboundTestPlugin } from "../test-utils/channel-plugins.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { createTempHomeEnv } from "../test-utils/temp-home.js";
@@ -91,6 +92,7 @@ type ModelCatalogRpcEntry = {
   contextWindow?: number;
   input?: string[];
   reasoning?: boolean;
+  agentRuntime?: GatewayAgentRuntime;
 };
 
 type AgentCatalogFixtureEntry = {
@@ -141,6 +143,7 @@ const expectedSortedCatalog = (): ModelCatalogRpcEntry[] => [
     id: "gpt-test-a",
     name: "A-Model",
     provider: "openai",
+    agentRuntime: { id: "openclaw", source: "implicit" },
     available: false,
     contextWindow: 8000,
   },
@@ -148,6 +151,7 @@ const expectedSortedCatalog = (): ModelCatalogRpcEntry[] => [
     id: "gpt-test-z",
     name: "gpt-test-z",
     provider: "openai",
+    agentRuntime: { id: "openclaw", source: "implicit" },
     available: false,
   },
 ];
@@ -184,6 +188,7 @@ const configuredProviderModelConfig = (params: ConfiguredProviderModelFixture) =
       models: {
         [`${params.provider}/${params.modelId}`]: { alias: params.alias },
       },
+      modelPolicy: { allow: [`${params.provider}/${params.modelId}`] },
     },
   },
   models: {
@@ -288,6 +293,7 @@ describe("gateway server models + voicewake", () => {
           defaults: {
             model: { primary: options.primary },
             models: options.models,
+            modelPolicy: { allow: Object.keys(options.models) },
           },
         },
       },
@@ -379,11 +385,9 @@ describe("gateway server models + voicewake", () => {
         expect(after.ok).toBe(true);
         expect(after.payload?.triggers).toEqual(["hi", "there"]);
 
-        const onDisk = JSON.parse(
-          await fs.readFile(path.join(homeDir, ".openclaw", "settings", "voicewake.json"), "utf8"),
-        ) as { triggers?: unknown; updatedAtMs?: unknown };
-        expect(onDisk.triggers).toEqual(["hi", "there"]);
-        expect(typeof onDisk.updatedAtMs).toBe("number");
+        await expect(
+          fs.readFile(path.join(homeDir, ".openclaw", "settings", "voicewake.json"), "utf8"),
+        ).rejects.toThrow(/ENOENT/u);
       });
     },
   );
@@ -459,13 +463,9 @@ describe("gateway server models + voicewake", () => {
         { trigger: "robot wake", target: { agentId: "main" } },
       ]);
 
-      const onDisk = JSON.parse(
-        await fs.readFile(
-          path.join(homeDir, ".openclaw", "settings", "voicewake-routing.json"),
-          "utf8",
-        ),
-      ) as { routes?: unknown };
-      expect(onDisk.routes).toEqual([{ trigger: "robot wake", target: { agentId: "main" } }]);
+      await expect(
+        fs.readFile(path.join(homeDir, ".openclaw", "settings", "voicewake-routing.json"), "utf8"),
+      ).rejects.toThrow(/ENOENT/u);
 
       const invalid = await rpcReq(ws, "voicewake.routing.set", { config: null });
       expect(invalid.ok).toBe(false);
@@ -637,7 +637,7 @@ describe("gateway server models + voicewake", () => {
     );
   });
 
-  test("models.list configured view still prefers agents.defaults.models allowlist", async () => {
+  test("models.list configured view prefers the explicit model policy", async () => {
     await withModelsConfig(
       {
         agents: {
@@ -646,6 +646,7 @@ describe("gateway server models + voicewake", () => {
             models: {
               "openai/gpt-test-z": {},
             },
+            modelPolicy: { allow: ["openai/gpt-test-z"] },
           },
         },
         models: {
@@ -663,6 +664,7 @@ describe("gateway server models + voicewake", () => {
             id: "gpt-test-z",
             name: "gpt-test-z",
             provider: "openai",
+            agentRuntime: { id: "openclaw", source: "implicit" },
             available: false,
           },
         ]);
@@ -670,7 +672,7 @@ describe("gateway server models + voicewake", () => {
     );
   });
 
-  test("models.list all view bypasses agents.defaults.models allowlist", async () => {
+  test("models.list all view bypasses the explicit model policy", async () => {
     await withModelsConfig(
       {
         agents: {
@@ -679,6 +681,7 @@ describe("gateway server models + voicewake", () => {
             models: {
               "openai/gpt-test-z": {},
             },
+            modelPolicy: { allow: ["openai/gpt-test-z"] },
           },
         },
       },
@@ -709,6 +712,7 @@ describe("gateway server models + voicewake", () => {
           id: "gpt-test-z",
           name: "gpt-test-z",
           provider: "openai",
+          agentRuntime: { id: "openclaw", source: "implicit" },
           available: false,
         },
       ],
@@ -726,6 +730,7 @@ describe("gateway server models + voicewake", () => {
           id: "not-in-catalog",
           name: "not-in-catalog",
           provider: "openai",
+          agentRuntime: { id: "openclaw", source: "implicit" },
           available: false,
         },
       ],
