@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>OpenClaw Session Viewer</title>
+</head>
+<body style="background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,monospace;padding:20px;margin:0;">
+
+<div id="zone" style="border:2px dashed #555;padding:60px;text-align:center;max-width:600px;margin:40px auto;border-radius:12px;">
+  <p style="font-size:16px;color:#c9d1d9;">Drop a <b>.jsonl</b> session file here</p>
+  <p style="margin-top:8px;">or <span style="color:#58a6ff;cursor:pointer;text-decoration:underline" onclick="document.getElementById('fi').click()">browse</span></p>
+  <p style="font-size:12px;color:#666;margin-top:8px;">~/.openclaw/agents/main/sessions/*.jsonl</p>
+  <input type="file" id="fi" style="display:none">
+  <p id="status" style="color:#58a6ff;margin-top:12px;font-size:13px;"></p>
+</div>
+
+<div id="viewer" style="display:none;">
+  <div style="margin-bottom:12px;">
+    <button onclick="document.getElementById('zone').style.display='';document.getElementById('viewer').style.display='none';"
+      style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px;">
+      &larr; Load another file
+    </button>
+  </div>
+  <h2 id="title" style="color:#8b949e;font-size:13px;margin-bottom:16px;"></h2>
+  <div id="output"></div>
+</div>
+
+<script>
+var zone = document.getElementById('zone');
+var fi = document.getElementById('fi');
+var status = document.getElementById('status');
+
+zone.addEventListener('dragover', function(e) { e.preventDefault(); zone.style.borderColor = '#58a6ff'; });
+zone.addEventListener('dragleave', function() { zone.style.borderColor = '#555'; });
+zone.addEventListener('drop', function(e) {
+  e.preventDefault();
+  zone.style.borderColor = '#555';
+  if (e.dataTransfer.files.length > 0) loadFile(e.dataTransfer.files[0]);
+});
+document.body.addEventListener('dragover', function(e) { e.preventDefault(); });
+document.body.addEventListener('drop', function(e) {
+  e.preventDefault();
+  if (e.dataTransfer.files.length > 0) loadFile(e.dataTransfer.files[0]);
+});
+fi.addEventListener('change', function() { if (fi.files.length > 0) loadFile(fi.files[0]); });
+
+function loadFile(file) {
+  status.textContent = 'Loading ' + file.name + ' (' + Math.round(file.size / 1024) + ' KB)...';
+  var reader = new FileReader();
+  reader.onerror = function() { status.textContent = 'Error reading file'; };
+  reader.onload = function() {
+    status.textContent = 'Parsing...';
+    setTimeout(function() {
+      try {
+        render(file.name, reader.result);
+      } catch(err) {
+        status.textContent = 'Error: ' + err.message;
+      }
+    }, 50);
+  };
+  reader.readAsText(file);
+}
+
+function E(s) { var d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+
+function T(ts) {
+  if (!ts) return '';
+  try { return new Date(ts).toLocaleTimeString('en-US', {hour12:false}); } catch(e) { return ts.substring(11,19); }
+}
+
+function B(cls, text) { return '<span style="display:inline-block;font-size:10px;padding:1px 6px;border-radius:3px;margin:1px 2px;' + ({
+  model: 'background:#1f2a3a;color:#58a6ff;border:1px solid #30363d',
+  api: 'background:#1a1a2e;color:#bc8cff;border:1px solid #30363d',
+  stop: 'background:#1a2a1a;color:#3fb950;border:1px solid #30363d',
+  error: 'background:#2a1010;color:#f85149;border:1px solid #f8514966',
+  usage: 'background:#161b22;color:#8b949e;border:1px solid #30363d',
+  tool: 'background:#1a1a2e;color:#bc8cff;border:1px solid #30363d;font-weight:bold',
+  detail: 'background:#161b22;color:#8b949e;border:1px solid #21262d',
+  id: 'color:#484f58'
+}[cls] || 'color:#8b949e') + '">' + E(text) + '</span>'; }
+
+function metaBadges(msg) {
+  var b = [];
+  if (msg.provider || msg.model) b.push(B('model', (msg.provider||'') + '/' + (msg.model||'')));
+  if (msg.api) b.push(B('api', msg.api));
+  if (msg.stopReason) b.push(B(msg.stopReason === 'error' ? 'error' : 'stop', 'stop:' + msg.stopReason));
+  if (msg.errorMessage) b.push(B('error', msg.errorMessage));
+  var u = msg.usage;
+  if (u && u.totalTokens > 0) {
+    var p = ['tok=' + u.totalTokens];
+    if (u.input) p.push('in=' + u.input);
+    if (u.output) p.push('out=' + u.output);
+    if (u.cacheRead) p.push('cR=' + u.cacheRead);
+    if (u.cacheWrite) p.push('cW=' + u.cacheWrite);
+    b.push(B('usage', p.join(' ')));
+  }
+  return b.join(' ');
+}
+
+function toolBadges(msg) {
+  var b = [];
+  if (msg.toolName) b.push(B('tool', msg.toolName));
+  if (msg.toolCallId) b.push(B('id', msg.toolCallId.substring(0, 24)));
+  if (msg.isError) b.push(B('error', 'ERROR'));
+  var d = msg.details;
+  if (d && typeof d === 'object') {
+    ['channel','to','status','error','query','provider','tookMs'].forEach(function(k) {
+      if (d[k] !== undefined) b.push(B('detail', k + '=' + String(d[k]).substring(0, 80)));
+    });
+  }
+  return b.join(' ');
+}
+
+function renderContent(content) {
+  if (!content || (Array.isArray(content) && content.length === 0)) return '<i style="color:#484f58">(empty)</i>';
+  if (typeof content === 'string') return '<div style="white-space:pre-wrap;word-break:break-word;line-height:1.5">' + E(content) + '</div>';
+  if (!Array.isArray(content)) return '<pre style="font-size:12px">' + E(JSON.stringify(content, null, 2)) + '</pre>';
+  var parts = [];
+  for (var i = 0; i < content.length; i++) {
+    var bl = content[i], t = bl.type || '';
+    if (t === 'thinking') {
+      var th = bl.thinking || '';
+      parts.push('<details style="margin:4px 0"><summary style="cursor:pointer;color:#d29922;font-size:12px">Thinking (' + th.length + ' chars)</summary><pre style="color:#8b949e;font-size:12px;padding:8px;margin-top:4px;background:#0d1117;border-radius:4px;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto">' + E(th) + '</pre></details>');
+    } else if (t === 'text') {
+      var txt = bl.text || '';
+      var isAlert = txt.indexOf('GOOGL') >= 0 && txt.indexOf('300') >= 0 && txt.length < 100;
+      var s = isAlert ? 'color:#f85149;font-weight:bold;background:#2a1010;padding:4px 8px;border-radius:4px;' : '';
+      parts.push('<div style="white-space:pre-wrap;word-break:break-word;line-height:1.5;padding:4px 0;' + s + '">' + E(txt) + '</div>');
+    } else if (t === 'toolCall') {
+      var nm = bl.name || '?';
+      var args = JSON.stringify(bl.arguments || {}, null, 2);
+      var isSend = nm === 'message' && bl.arguments && bl.arguments.action === 'send';
+      var bc = isSend ? '#f85149' : '#58a6ff';
+      var bg = isSend ? '#2a1a1a' : '#1a1a2e';
+      parts.push('<div style="margin:4px 0;padding:6px 10px;background:' + bg + ';border-left:3px solid ' + bc + ';border-radius:4px"><span style="color:' + bc + ';font-size:12px">Tool Call: <b>' + E(nm) + '</b></span>' + (bl.id ? ' ' + B('id', bl.id.substring(0,24)) : '') + '<pre style="font-size:12px;color:#c9d1d9;margin-top:4px;white-space:pre-wrap;word-break:break-word">' + E(args) + '</pre></div>');
+    } else {
+      parts.push('<div style="margin:4px 0"><span style="color:#f85149;font-size:12px">' + E(t) + '</span><pre style="font-size:12px">' + E(JSON.stringify(bl).substring(0, 1000)) + '</pre></div>');
+    }
+  }
+  return parts.join('');
+}
+
+function row(ln, time, roleColor, roleText, bg, content) {
+  return '<tr style="border-bottom:1px solid #21262d;vertical-align:top">' +
+    '<td style="padding:8px 10px;color:#484f58;width:40px;text-align:right;font-size:11px">' + ln + '</td>' +
+    '<td style="padding:8px 10px;color:#8b949e;width:70px;font-size:11px;white-space:nowrap">' + time + '</td>' +
+    '<td style="padding:8px 10px;width:100px;font-size:11px;font-weight:bold;white-space:nowrap;color:' + roleColor + '">' + roleText + '</td>' +
+    '<td style="padding:8px 10px;background:' + bg + '">' + content + '</td></tr>';
+}
+
+function render(filename, text) {
+  var NL = String.fromCharCode(10);
+  var lines = text.trim().split(NL);
+  var entries = [];
+  for (var i = 0; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    try { entries.push([i + 1, JSON.parse(lines[i])]); } catch(e) {}
+  }
+
+  document.getElementById('title').textContent = filename + ' \u2014 ' + entries.length + ' entries';
+  var h = [];
+
+  for (var ei = 0; ei < entries.length; ei++) {
+    var ln = entries[ei][0], obj = entries[ei][1];
+    var ts = obj.timestamp || '', time = T(ts);
+    var etype = obj.type || '', msg = obj.message || {}, role = msg.role || '';
+
+    if (etype === 'session') {
+      h.push(row(ln, time, '#3fb950', 'session', '#1a2a1a', 'Session Start ' + B('detail','id=' + (obj.id||'').substring(0,12)) + ' ' + B('detail','v' + (obj.version||'')) + ' ' + B('detail','cwd=' + (obj.cwd||''))));
+      continue;
+    }
+    if (etype === 'model_change') {
+      h.push(row(ln, time, '#484f58', 'system', '#161b22', 'Model change: <b>' + E((obj.provider||'') + '/' + (obj.modelId||'')) + '</b>'));
+      continue;
+    }
+    if (etype === 'thinking_level_change') {
+      h.push(row(ln, time, '#484f58', 'system', '#161b22', 'Thinking level: <b>' + E(obj.thinkingLevel||'') + '</b>'));
+      continue;
+    }
+    if (etype === 'custom') {
+      var ct = obj.customType || '', data = obj.data || {};
+      if (ct === 'model-snapshot') {
+        h.push(row(ln, time, '#bc8cff', 'model', '#1a1220', 'Model: <b>' + E((data.provider||'') + '/' + (data.modelId||'')) + '</b> ' + B('api', data.modelApi||'')));
+      } else {
+        h.push(row(ln, time, '#484f58', 'custom', '#161b22', E(ct || '(event)')));
+      }
+      continue;
+    }
+    if (etype !== 'message') {
+      h.push(row(ln, time, '#484f58', etype, '#161b22', '<pre style="font-size:12px">' + E(JSON.stringify(obj).substring(0, 500)) + '</pre>'));
+      continue;
+    }
+
+    var meta = metaBadges(msg);
+    var rc = renderContent(msg.content);
+
+    if (role === 'user') {
+      var preview = JSON.stringify(msg.content || '').substring(0, 200);
+      var isHb = preview.indexOf('HEARTBEAT') >= 0;
+      var isQ = preview.indexOf('[Queued messages') >= 0;
+      var isSys = preview.indexOf('System:') >= 0;
+      var lbl = 'user', clr = '#58a6ff', bg = '#0d2240';
+      if (isHb) { lbl = 'heartbeat'; clr = '#d29922'; bg = '#1a1a0d'; }
+      else if (isQ) { lbl = 'user (queued)'; }
+      else if (isSys) { lbl = 'system event'; clr = '#bc8cff'; bg = '#1a1520'; }
+      h.push(row(ln, time, clr, lbl, bg, (meta ? meta + '<br>' : '') + rc));
+    } else if (role === 'assistant') {
+      h.push(row(ln, time, '#3fb950', 'assistant', '#0d1117', (meta ? '<div style="margin-bottom:4px">' + meta + '</div>' : '') + rc));
+    } else if (role === 'toolResult') {
+      var tm = toolBadges(msg);
+      h.push(row(ln, time, '#bc8cff', 'toolResult', '#161b22', (tm ? '<div style="margin-bottom:4px">' + tm + '</div>' : '') + rc));
+    } else {
+      h.push(row(ln, time, '#8b949e', role || etype, '#161b22', (meta ? meta + '<br>' : '') + rc));
+    }
+  }
+
+  document.getElementById('output').innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="border-bottom:2px solid #21262d"><th style="padding:8px 10px;text-align:left;color:#8b949e;font-size:11px;width:40px">#</th><th style="padding:8px 10px;text-align:left;color:#8b949e;font-size:11px;width:70px">Time</th><th style="padding:8px 10px;text-align:left;color:#8b949e;font-size:11px;width:100px">Role</th><th style="padding:8px 10px;text-align:left;color:#8b949e;font-size:11px">Content</th></tr></thead><tbody>' + h.join('') + '</tbody></table>';
+  zone.style.display = 'none';
+  document.getElementById('viewer').style.display = '';
+  window.scrollTo(0, 0);
+}
+</script>
+</body>
+</html>
